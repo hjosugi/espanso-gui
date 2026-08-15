@@ -1,5 +1,8 @@
 use crate::lossless_yaml;
-use crate::model::{ConfigProfile, MatchFile, Snippet};
+use crate::{
+    conflict::{MergePlan, ResolutionChoice},
+    model::{ConfigProfile, MatchFile, Snippet},
+};
 use atomic_write_file::AtomicWriteFile;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -32,6 +35,7 @@ pub struct WorkspaceFile {
     pub display_name: String,
     pub document: MatchFile,
     pub raw_yaml: String,
+    pub base_yaml: String,
     pub saved_hash: String,
     pub modified_ms: u64,
     pub is_package: bool,
@@ -45,6 +49,7 @@ pub struct ConfigFile {
     pub display_name: String,
     pub profile: ConfigProfile,
     pub raw_yaml: String,
+    pub base_yaml: String,
     pub saved_hash: String,
     pub modified_ms: u64,
     pub is_default: bool,
@@ -100,6 +105,19 @@ pub struct SaveReceipt {
     pub backup_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExternalConflict {
+    pub remote_yaml: String,
+    pub remote_hash: String,
+    pub plan: MergePlan,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub backup_path: PathBuf,
+    pub timestamp: String,
+}
+
 pub fn initialize_root(root: &Path) -> StorageResult<()> {
     fs::create_dir_all(root.join("match"))?;
     fs::create_dir_all(root.join("config"))?;
@@ -152,6 +170,7 @@ pub fn load_workspace(root: &Path) -> StorageResult<Vec<WorkspaceFile>> {
                 .to_string(),
             relative_path,
             document,
+            base_yaml: raw_yaml.clone(),
             saved_hash: hash(raw_yaml.as_bytes()),
             modified_ms: metadata
                 .modified()
@@ -210,6 +229,7 @@ pub fn load_config_profiles(root: &Path) -> StorageResult<Vec<ConfigFile>> {
                 || relative_path == Path::new("config/default.yaml"),
             relative_path,
             profile,
+            base_yaml: raw_yaml.clone(),
             saved_hash: hash(raw_yaml.as_bytes()),
             modified_ms: metadata
                 .modified()
@@ -242,6 +262,7 @@ pub fn create_match_file(root: &Path, name: &str) -> StorageResult<WorkspaceFile
         relative_path: relative,
         display_name: safe_name,
         document,
+        base_yaml: raw_yaml.clone(),
         saved_hash: hash(raw_yaml.as_bytes()),
         modified_ms: milliseconds_since_epoch(SystemTime::now()),
         is_package: false,
@@ -269,6 +290,7 @@ pub fn create_config_file(root: &Path, name: &str) -> StorageResult<ConfigFile> 
         relative_path: relative,
         display_name: safe_name.clone(),
         profile,
+        base_yaml: raw_yaml.clone(),
         saved_hash: hash(raw_yaml.as_bytes()),
         modified_ms: milliseconds_since_epoch(SystemTime::now()),
         is_default: safe_name == "default",
@@ -301,6 +323,7 @@ pub fn save_workspace_file(root: &Path, file: &mut WorkspaceFile) -> StorageResu
     atomic_write(&target, file.raw_yaml.as_bytes())?;
     let saved_hash = hash(file.raw_yaml.as_bytes());
     file.saved_hash.clone_from(&saved_hash);
+    file.base_yaml.clone_from(&file.raw_yaml);
     file.modified_ms = milliseconds_since_epoch(SystemTime::now());
     file.dirty = false;
     file.had_comments = contains_yaml_comments(&file.raw_yaml);
@@ -333,6 +356,7 @@ pub fn save_config_file(root: &Path, file: &mut ConfigFile) -> StorageResult<Sav
     atomic_write(&target, file.raw_yaml.as_bytes())?;
     let saved_hash = hash(file.raw_yaml.as_bytes());
     file.saved_hash.clone_from(&saved_hash);
+    file.base_yaml.clone_from(&file.raw_yaml);
     file.modified_ms = milliseconds_since_epoch(SystemTime::now());
     file.dirty = false;
     file.had_comments = contains_yaml_comments(&file.raw_yaml);
@@ -366,6 +390,204 @@ pub fn move_to_recoverable_trash(root: &Path, relative_path: &Path) -> StorageRe
         }
     }
     Ok(destination)
+}
+
+pub fn analyze_workspace_conflict(
+    root: &Path,
+    file: &WorkspaceFile,
+) -> StorageResult<Option<ExternalConflict>> {
+    analyze_external_conflict(
+        root,
+        &file.relative_path,
+        &file.saved_hash,
+        &file.base_yaml,
+        &file.raw_yaml,
+    )
+}
+
+pub fn analyze_config_conflict(
+    root: &Path,
+    file: &ConfigFile,
+) -> StorageResult<Option<ExternalConflict>> {
+    analyze_external_conflict(
+        root,
+        &file.relative_path,
+        &file.saved_hash,
+        &file.base_yaml,
+        &file.raw_yaml,
+    )
+}
+
+pub fn resolve_workspace_conflict(
+    root: &Path,
+    file: &mut WorkspaceFile,
+    conflict: &ExternalConflict,
+    choices: &[ResolutionChoice],
+) -> StorageResult<SaveReceipt> {
+    let value = conflict.plan.resolve(choices);
+    let document: MatchFile = serde_yaml_ng::from_value(value)?;
+    let remote_document = MatchFile::from_yaml(&conflict.remote_yaml)?;
+    let resolved_yaml =
+        lossless_yaml::patch_match_file(&conflict.remote_yaml, &remote_document, &document)?;
+    let receipt = save_resolved_content(
+        root,
+        &file.relative_path,
+        &conflict.remote_hash,
+        &resolved_yaml,
+    )?;
+    file.document = document;
+    file.raw_yaml = resolved_yaml;
+    file.base_yaml.clone_from(&file.raw_yaml);
+    file.saved_hash.clone_from(&receipt.hash);
+    file.modified_ms = milliseconds_since_epoch(SystemTime::now());
+    file.dirty = false;
+    file.had_comments = contains_yaml_comments(&file.raw_yaml);
+    Ok(receipt)
+}
+
+pub fn resolve_config_conflict(
+    root: &Path,
+    file: &mut ConfigFile,
+    conflict: &ExternalConflict,
+    choices: &[ResolutionChoice],
+) -> StorageResult<SaveReceipt> {
+    let value = conflict.plan.resolve(choices);
+    let profile: ConfigProfile = serde_yaml_ng::from_value(value)?;
+    let remote_profile = ConfigProfile::from_yaml(&conflict.remote_yaml)?;
+    let resolved_yaml =
+        lossless_yaml::patch_config_profile(&conflict.remote_yaml, &remote_profile, &profile)?;
+    let receipt = save_resolved_content(
+        root,
+        &file.relative_path,
+        &conflict.remote_hash,
+        &resolved_yaml,
+    )?;
+    file.profile = profile;
+    file.raw_yaml = resolved_yaml;
+    file.base_yaml.clone_from(&file.raw_yaml);
+    file.saved_hash.clone_from(&receipt.hash);
+    file.modified_ms = milliseconds_since_epoch(SystemTime::now());
+    file.dirty = false;
+    file.had_comments = contains_yaml_comments(&file.raw_yaml);
+    Ok(receipt)
+}
+
+pub fn list_history(root: &Path, relative_path: &Path) -> StorageResult<Vec<HistoryEntry>> {
+    let root = canonical_root(root)?;
+    let relative = validate_any_relative_path(relative_path)?;
+    let backups = root.join(".espanso-gui/backups");
+    if !backups.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for timestamp in fs::read_dir(backups)? {
+        let timestamp = timestamp?;
+        if !timestamp.file_type()?.is_dir() {
+            continue;
+        }
+        let candidate = timestamp.path().join(&relative);
+        if candidate.is_file() {
+            entries.push(HistoryEntry {
+                backup_path: candidate,
+                timestamp: timestamp.file_name().to_string_lossy().into_owned(),
+            });
+        }
+    }
+    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    Ok(entries)
+}
+
+pub fn restore_history(
+    root: &Path,
+    relative_path: &Path,
+    history_path: &Path,
+) -> StorageResult<SaveReceipt> {
+    let root = canonical_root(root)?;
+    let relative = validate_any_relative_path(relative_path)?;
+    let backup_root = root.join(".espanso-gui/backups");
+    let history = history_path.canonicalize()?;
+    if !history.starts_with(&backup_root) || !history.is_file() {
+        return Err(StorageError::Message(
+            "アプリのバックアップ以外からは復元できません".into(),
+        ));
+    }
+    let target = checked_validated_target(&root, &relative)?;
+    let restored = fs::read(&history)?;
+    if restored.len() as u64 > MAX_CONFIG_FILE_BYTES {
+        return Err(StorageError::Message(
+            "復元する設定ファイルが大きすぎます".into(),
+        ));
+    }
+    if relative.starts_with("match") {
+        MatchFile::from_yaml(
+            std::str::from_utf8(&restored)
+                .map_err(|_| StorageError::Message("バックアップがUTF-8ではありません".into()))?,
+        )?;
+    } else {
+        ConfigProfile::from_yaml(
+            std::str::from_utf8(&restored)
+                .map_err(|_| StorageError::Message("バックアップがUTF-8ではありません".into()))?,
+        )?;
+    }
+    let backup_path = backup_file(&root, &relative, &target)?;
+    atomic_write(&target, &restored)?;
+    Ok(SaveReceipt {
+        hash: hash(&restored),
+        backup_path,
+    })
+}
+
+fn analyze_external_conflict(
+    root: &Path,
+    relative_path: &Path,
+    saved_hash: &str,
+    base_yaml: &str,
+    local_yaml: &str,
+) -> StorageResult<Option<ExternalConflict>> {
+    let root = canonical_root(root)?;
+    let relative = validate_any_relative_path(relative_path)?;
+    let target = checked_validated_target(&root, &relative)?;
+    if !target.is_file() {
+        return Err(StorageError::Message(
+            "保存先が削除されています。再読み込みしてください".into(),
+        ));
+    }
+    let remote_yaml = fs::read_to_string(target)?;
+    let remote_hash = hash(remote_yaml.as_bytes());
+    if remote_hash == saved_hash {
+        return Ok(None);
+    }
+    let base = serde_yaml_ng::from_str(base_yaml)?;
+    let local = serde_yaml_ng::from_str(local_yaml)?;
+    let disk = serde_yaml_ng::from_str(&remote_yaml)?;
+    Ok(Some(ExternalConflict {
+        remote_yaml,
+        remote_hash,
+        plan: MergePlan::new(&base, &local, &disk),
+    }))
+}
+
+fn save_resolved_content(
+    root: &Path,
+    relative_path: &Path,
+    expected_remote_hash: &str,
+    content: &str,
+) -> StorageResult<SaveReceipt> {
+    let root = canonical_root(root)?;
+    let relative = validate_any_relative_path(relative_path)?;
+    let target = checked_validated_target(&root, &relative)?;
+    let current = fs::read(&target)?;
+    if hash(&current) != expected_remote_hash {
+        return Err(StorageError::Message(
+            "競合確認後にファイルが再度変更されました。もう一度比較してください".into(),
+        ));
+    }
+    let backup_path = backup_file(&root, &relative, &target)?;
+    atomic_write(&target, content.as_bytes())?;
+    Ok(SaveReceipt {
+        hash: hash(content.as_bytes()),
+        backup_path,
+    })
 }
 
 pub fn create_backup_snapshot(root: &Path, destination_root: &Path) -> StorageResult<PathBuf> {
@@ -487,6 +709,20 @@ fn validate_config_relative_path(path: &Path) -> StorageResult<PathBuf> {
     )
 }
 
+fn validate_any_relative_path(path: &Path) -> StorageResult<PathBuf> {
+    match path.components().next() {
+        Some(Component::Normal(value)) if value == OsStr::new("match") => {
+            validate_relative_path(path)
+        }
+        Some(Component::Normal(value)) if value == OsStr::new("config") => {
+            validate_config_relative_path(path)
+        }
+        _ => Err(StorageError::Message(
+            "matchまたはconfigフォルダ内の設定だけを操作できます".into(),
+        )),
+    }
+}
+
 fn validate_relative_yaml_path(
     path: &Path,
     required_root: &str,
@@ -566,10 +802,22 @@ fn backup_file(root: &Path, relative: &Path, source: &Path) -> StorageResult<Opt
     if !source.exists() {
         return Ok(None);
     }
-    let destination = root
-        .join(".espanso-gui/backups")
-        .join(timestamp())
-        .join(relative);
+    let backup_root = root.join(".espanso-gui/backups");
+    let stamp = timestamp();
+    let mut destination = backup_root.join(&stamp).join(relative);
+    for sequence in 1..=1000 {
+        if !destination.exists() {
+            break;
+        }
+        destination = backup_root
+            .join(format!("{stamp}-{sequence:03}"))
+            .join(relative);
+    }
+    if destination.exists() {
+        return Err(StorageError::Message(
+            "backup履歴の一意な保存先を作成できません".into(),
+        ));
+    }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -684,6 +932,7 @@ mod tests {
                 ..MatchFile::default()
             },
             raw_yaml: String::new(),
+            base_yaml: String::new(),
             saved_hash: String::new(),
             modified_ms: 0,
             is_package: false,
@@ -720,5 +969,49 @@ mod tests {
         let saved = fs::read_to_string(temp.path().join("config/telegram.yml")).unwrap();
         assert!(saved.contains("filter_exec: Telegram"));
         assert!(saved.contains("enable: false"));
+    }
+
+    #[test]
+    fn three_way_merge_and_history_preserve_both_independent_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_root(temp.path()).unwrap();
+        let mut setup = load_workspace(temp.path()).unwrap().remove(0);
+        setup.document.matches.push(Snippet::new());
+        setup.refresh_raw_from_document().unwrap();
+        save_workspace_file(temp.path(), &mut setup).unwrap();
+
+        let mut local = load_workspace(temp.path()).unwrap().remove(0);
+        local.document.matches[0].set_trigger_list(vec![":local".into()]);
+        local.refresh_raw_from_document().unwrap();
+
+        let mut disk_document = MatchFile::from_yaml(&local.base_yaml).unwrap();
+        disk_document.matches[0].replace = Some("disk value".into());
+        fs::write(
+            temp.path().join("match/base.yml"),
+            disk_document.to_yaml().unwrap(),
+        )
+        .unwrap();
+
+        let conflict = analyze_workspace_conflict(temp.path(), &local)
+            .unwrap()
+            .unwrap();
+        assert!(conflict.plan.conflicts.is_empty());
+        resolve_workspace_conflict(temp.path(), &mut local, &conflict, &[]).unwrap();
+        assert_eq!(local.document.matches[0].trigger_list(), vec![":local"]);
+        assert_eq!(
+            local.document.matches[0].replace.as_deref(),
+            Some("disk value")
+        );
+
+        let history = list_history(temp.path(), Path::new("match/base.yml")).unwrap();
+        assert!(history.len() >= 2);
+        restore_history(
+            temp.path(),
+            Path::new("match/base.yml"),
+            &history[0].backup_path,
+        )
+        .unwrap();
+        MatchFile::from_yaml(&fs::read_to_string(temp.path().join("match/base.yml")).unwrap())
+            .unwrap();
     }
 }

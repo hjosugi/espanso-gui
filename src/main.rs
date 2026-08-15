@@ -1,4 +1,5 @@
 mod app;
+mod conflict;
 mod espanso;
 mod lossless_yaml;
 mod model;

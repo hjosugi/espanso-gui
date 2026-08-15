@@ -1,6 +1,7 @@
+use crate::conflict::ResolutionChoice;
 use crate::espanso::{self, EspansoAction, EspansoStatus};
 use crate::model::{ContentKind, DiagnosticLevel, FormField, Snippet, Variable};
-use crate::storage::{self, ConfigFile, WorkspaceFile};
+use crate::storage::{self, ConfigFile, ExternalConflict, WorkspaceFile};
 use crate::theme;
 use eframe::egui::{
     self, Align, Button, Color32, ComboBox, FontFamily, FontId, Frame, Key, Layout, Margin,
@@ -94,6 +95,26 @@ enum PendingDelete {
     File,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ConflictTarget {
+    Match(usize),
+    Config(usize),
+}
+
+#[derive(Debug, Clone)]
+struct ConflictDialog {
+    target: ConflictTarget,
+    conflict: ExternalConflict,
+    choices: Vec<ResolutionChoice>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingRestore {
+    relative_path: PathBuf,
+    backup_path: PathBuf,
+    timestamp: String,
+}
+
 pub struct EspansoGuiApp {
     preferences: Preferences,
     status: EspansoStatus,
@@ -115,6 +136,8 @@ pub struct EspansoGuiApp {
     variable_editor: Option<VariableEditor>,
     form_field_editor: Option<FormFieldEditor>,
     pending_delete: Option<PendingDelete>,
+    conflict_dialog: Option<ConflictDialog>,
+    pending_restore: Option<PendingRestore>,
     confirm_close: bool,
     markdown_cache: CommonMarkCache,
 }
@@ -171,6 +194,8 @@ impl EspansoGuiApp {
             variable_editor: None,
             form_field_editor: None,
             pending_delete: None,
+            conflict_dialog: None,
+            pending_restore: None,
             confirm_close: false,
             markdown_cache: CommonMarkCache::default(),
         }
@@ -224,7 +249,8 @@ impl EspansoGuiApp {
 
     fn save_selected(&mut self) {
         let root = self.preferences.config_root.clone();
-        let Some(file) = self.selected_file_mut() else {
+        let index = self.selected_file;
+        let Some(file) = self.files.get(index) else {
             return;
         };
         if file.is_package {
@@ -234,6 +260,26 @@ impl EspansoGuiApp {
             );
             return;
         }
+        match storage::analyze_workspace_conflict(&root, file) {
+            Ok(Some(conflict)) => {
+                self.conflict_dialog = Some(ConflictDialog {
+                    choices: vec![ResolutionChoice::Local; conflict.plan.conflicts.len()],
+                    target: ConflictTarget::Match(index),
+                    conflict,
+                });
+                self.notify(
+                    MessageKind::Info,
+                    "外部変更を検出しました。local three-way mergeを確認してください",
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.notify(MessageKind::Error, error.to_string());
+                return;
+            }
+        }
+        let file = &mut self.files[index];
         match storage::save_workspace_file(&root, file) {
             Ok(receipt) => {
                 let backup = receipt
@@ -251,9 +297,30 @@ impl EspansoGuiApp {
 
     fn save_selected_config(&mut self) {
         let root = self.preferences.config_root.clone();
-        let Some(file) = self.config_files.get_mut(self.selected_config) else {
+        let index = self.selected_config;
+        let Some(file) = self.config_files.get(index) else {
             return;
         };
+        match storage::analyze_config_conflict(&root, file) {
+            Ok(Some(conflict)) => {
+                self.conflict_dialog = Some(ConflictDialog {
+                    choices: vec![ResolutionChoice::Local; conflict.plan.conflicts.len()],
+                    target: ConflictTarget::Config(index),
+                    conflict,
+                });
+                self.notify(
+                    MessageKind::Info,
+                    "外部変更を検出しました。local three-way mergeを確認してください",
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.notify(MessageKind::Error, error.to_string());
+                return;
+            }
+        }
+        let file = &mut self.config_files[index];
         match storage::save_config_file(&root, file) {
             Ok(receipt) => {
                 let backup = receipt
@@ -1856,11 +1923,61 @@ impl EspansoGuiApp {
                     "通常の保存でも変更前ファイルを .espanso-gui/backups に自動保存します。ファイル削除は .espanso-gui/trash へ退避します。",
                 );
                 ui.add_space(18.0);
+                ui.heading("選択ファイルの保存履歴");
+                if let Some(relative) = self
+                    .selected_file()
+                    .map(|file| file.relative_path.clone())
+                {
+                    self.history_list(ui, &relative);
+                } else {
+                    ui.label("履歴を表示するスニペットファイルを選択してください。");
+                }
+                ui.add_space(18.0);
                 ui.heading("ファイル操作");
                 if ui.button(RichText::new("選択中のファイルを削除…").color(theme::DANGER)).clicked() {
                     self.pending_delete = Some(PendingDelete::File);
                 }
             });
+    }
+
+    fn history_list(&mut self, ui: &mut Ui, relative_path: &Path) {
+        match storage::list_history(&self.preferences.config_root, relative_path) {
+            Ok(entries) if entries.is_empty() => {
+                ui.label(RichText::new("まだ履歴はありません").color(theme::MUTED));
+            }
+            Ok(entries) => {
+                let can_restore = !self.has_dirty_files();
+                for entry in entries.into_iter().take(10) {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&entry.timestamp)
+                                .family(FontFamily::Monospace)
+                                .small(),
+                        );
+                        if ui
+                            .add_enabled(can_restore, Button::new("この版を復元…"))
+                            .clicked()
+                        {
+                            self.pending_restore = Some(PendingRestore {
+                                relative_path: relative_path.to_path_buf(),
+                                backup_path: entry.backup_path,
+                                timestamp: entry.timestamp,
+                            });
+                        }
+                    });
+                }
+                if !can_restore {
+                    ui.label(
+                        RichText::new("未保存の変更があるため、履歴復元は一時的に無効です。")
+                            .small()
+                            .color(theme::AMBER),
+                    );
+                }
+            }
+            Err(error) => {
+                ui.label(RichText::new(error.to_string()).color(theme::DANGER));
+            }
+        }
     }
 
     fn about_view(&mut self, ui: &mut Ui) {
@@ -1928,6 +2045,8 @@ impl EspansoGuiApp {
         self.new_config_window(ui);
         self.variable_window(ui);
         self.form_field_window(ui);
+        self.conflict_window(ui);
+        self.restore_confirmation(ui);
         self.delete_confirmation(ui);
         self.close_confirmation(ui);
     }
@@ -2001,6 +2120,196 @@ impl EspansoGuiApp {
         }
         if create {
             self.create_config_file();
+        }
+    }
+
+    fn conflict_window(&mut self, ui: &mut Ui) {
+        let Some(mut dialog) = self.conflict_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new("外部変更をthree-way merge")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([760.0, 560.0])
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                callout(
+                    ui,
+                    theme::AMBER,
+                    "読み込み時点（base）、編集中（local）、現在のdiskを比較しました。保存前にdisk最新版も自動バックアップします。",
+                );
+                ui.add_space(8.0);
+                if dialog.conflict.plan.conflicts.is_empty() {
+                    callout(
+                        ui,
+                        theme::ACCENT,
+                        "同じfieldを双方が変更した箇所はありません。独立した変更を自動mergeできます。",
+                    );
+                } else {
+                    ui.label(format!(
+                        "{} fieldで双方の変更が重なっています。各fieldの採用値を選択してください。",
+                        dialog.conflict.plan.conflicts.len()
+                    ));
+                    ui.separator();
+                    ScrollArea::vertical()
+                        .id_salt("conflict-fields")
+                        .max_height(390.0)
+                        .show(ui, |ui| {
+                            for (index, conflict) in
+                                dialog.conflict.plan.conflicts.iter().enumerate()
+                            {
+                                Frame::group(ui.style()).show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(&conflict.label)
+                                            .family(FontFamily::Monospace)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "base: {}",
+                                            conflict.base_summary()
+                                        ))
+                                        .small()
+                                        .color(theme::MUTED),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.selectable_value(
+                                            &mut dialog.choices[index],
+                                            ResolutionChoice::Local,
+                                            "localを採用",
+                                        );
+                                        ui.code(conflict.local_summary());
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.selectable_value(
+                                            &mut dialog.choices[index],
+                                            ResolutionChoice::Disk,
+                                            "diskを採用",
+                                        );
+                                        ui.code(conflict.disk_summary());
+                                    });
+                                });
+                                ui.add_space(8.0);
+                            }
+                        });
+                }
+                ui.separator();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(Button::new("mergeして保存").fill(theme::ACCENT))
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if apply {
+            let root = self.preferences.config_root.clone();
+            let result = match dialog.target {
+                ConflictTarget::Match(index) => self.files.get_mut(index).map_or_else(
+                    || {
+                        Err(storage::StorageError::Message(
+                            "対象ファイルがありません".into(),
+                        ))
+                    },
+                    |file| {
+                        storage::resolve_workspace_conflict(
+                            &root,
+                            file,
+                            &dialog.conflict,
+                            &dialog.choices,
+                        )
+                    },
+                ),
+                ConflictTarget::Config(index) => self.config_files.get_mut(index).map_or_else(
+                    || {
+                        Err(storage::StorageError::Message(
+                            "対象ファイルがありません".into(),
+                        ))
+                    },
+                    |file| {
+                        storage::resolve_config_conflict(
+                            &root,
+                            file,
+                            &dialog.conflict,
+                            &dialog.choices,
+                        )
+                    },
+                ),
+            };
+            match result {
+                Ok(receipt) => self.notify(
+                    MessageKind::Success,
+                    format!("three-way mergeを保存しました / {}", &receipt.hash[..8]),
+                ),
+                Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            }
+        } else if open && !cancel {
+            self.conflict_dialog = Some(dialog);
+        }
+    }
+
+    fn restore_confirmation(&mut self, ui: &mut Ui) {
+        let Some(pending) = self.pending_restore.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut restore = false;
+        let mut cancel = false;
+        egui::Window::new("保存履歴を復元")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "{} を {} の内容へ戻します。",
+                    pending.relative_path.display(),
+                    pending.timestamp
+                ));
+                callout(
+                    ui,
+                    theme::AMBER,
+                    "現在のdisk版も先に新しい履歴としてbackupするため、復元操作自体を取り消せます。",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("キャンセル").clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .add(Button::new("backupして復元").fill(theme::ACCENT))
+                        .clicked()
+                    {
+                        restore = true;
+                    }
+                });
+            });
+        if restore {
+            match storage::restore_history(
+                &self.preferences.config_root,
+                &pending.relative_path,
+                &pending.backup_path,
+            ) {
+                Ok(_) => {
+                    self.pending_restore = None;
+                    self.reload_workspace();
+                    self.notify(MessageKind::Success, "保存履歴から復元しました");
+                }
+                Err(error) => {
+                    self.pending_restore = None;
+                    self.notify(MessageKind::Error, error.to_string());
+                }
+            }
+        } else if cancel || !open {
+            self.pending_restore = None;
         }
     }
 
