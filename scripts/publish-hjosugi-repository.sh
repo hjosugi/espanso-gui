@@ -60,6 +60,7 @@ create_issues() {
     title="$(sed -n 's/^title: //p' "$issue_file")"
     labels="$(sed -n 's/^labels: //p' "$issue_file")"
     [[ -n "$title" && -n "$labels" ]] || die "invalid issue draft: $issue_file"
+    labels="${labels//, /,}"
     if gh issue list --repo "$REPOSITORY" --state all --limit 1000 --json title --jq '.[].title' | rg -Fxq -- "$title"; then
       printf 'issue already exists: %s\n' "$title"
       continue
