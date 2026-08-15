@@ -133,6 +133,7 @@ pub struct EspansoGuiApp {
     new_config_dialog: bool,
     new_config_name: String,
     profile_raw_yaml: bool,
+    html_source_mode: bool,
     variable_editor: Option<VariableEditor>,
     form_field_editor: Option<FormFieldEditor>,
     pending_delete: Option<PendingDelete>,
@@ -191,6 +192,7 @@ impl EspansoGuiApp {
             new_config_dialog: false,
             new_config_name: "application".into(),
             profile_raw_yaml: false,
+            html_source_mode: false,
             variable_editor: None,
             form_field_editor: None,
             pending_delete: None,
@@ -997,6 +999,18 @@ impl EspansoGuiApp {
         });
 
         ui.add_space(8.0);
+        if snippet.content_kind() == ContentKind::Html {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("HTML編集").strong());
+                ui.selectable_value(&mut self.html_source_mode, false, "Composer");
+                ui.selectable_value(&mut self.html_source_mode, true, "Source");
+                ui.label(
+                    RichText::new("previewはactive contentを実行・取得しません")
+                        .small()
+                        .color(theme::MUTED),
+                );
+            });
+        }
         editor_toolbar(ui, snippet);
         ui.add_space(6.0);
         match snippet.content_kind() {
@@ -1005,7 +1019,14 @@ impl EspansoGuiApp {
             kind => {
                 ui.add(
                     TextEdit::multiline(snippet.content_mut())
-                        .font(FontId::new(15.0, FontFamily::Monospace))
+                        .font(FontId::new(
+                            15.0,
+                            if kind == ContentKind::Html && !self.html_source_mode {
+                                FontFamily::Proportional
+                            } else {
+                                FontFamily::Monospace
+                            },
+                        ))
                         .desired_rows(14)
                         .desired_width(f32::INFINITY)
                         .hint_text(match kind {
@@ -1129,11 +1150,21 @@ impl EspansoGuiApp {
                 }
                 ContentKind::Html => {
                     ui.label(
-                        RichText::new("HTMLは展開先アプリのクリップボード機能で描画されます。ここではソースを表示します。")
+                        RichText::new("安全なテキストpreview（script/style/remote contentは実行・取得しません）")
                             .small()
                             .color(theme::MUTED),
                     );
-                    ui.code(snippet.content());
+                    let preview = safe_html_preview(snippet.content());
+                    if preview.trim().is_empty() {
+                        ui.label(RichText::new("previewできる本文がありません").color(theme::MUTED));
+                    } else {
+                        ui.label(preview);
+                    }
+                    if self.html_source_mode {
+                        ui.collapsing("生成source", |ui| {
+                            ui.code(snippet.content());
+                        });
+                    }
                 }
                 _ => {
                     ui.label(snippet.content());
@@ -2785,6 +2816,107 @@ fn option_checkbox(ui: &mut Ui, value: &mut Option<bool>, label: &str, descripti
     });
 }
 
+#[derive(Debug, Clone, Copy)]
+enum HtmlCommand {
+    Bold,
+    Italic,
+    Heading,
+    Link,
+    UnorderedList,
+    OrderedList,
+    Color,
+    Image,
+}
+
+fn html_fragment(command: HtmlCommand) -> &'static str {
+    match command {
+        HtmlCommand::Bold => "<strong>太字</strong>",
+        HtmlCommand::Italic => "<em>斜体</em>",
+        HtmlCommand::Heading => "<h2>見出し</h2>",
+        HtmlCommand::Link => "<a href=\"https://example.com\">リンク</a>",
+        HtmlCommand::UnorderedList => "<ul><li>項目1</li><li>項目2</li></ul>",
+        HtmlCommand::OrderedList => "<ol><li>項目1</li><li>項目2</li></ol>",
+        HtmlCommand::Color => "<span style=\"color: #197966\">色付きテキスト</span>",
+        HtmlCommand::Image => "<img src=\"$CONFIG/assets/image.png\" alt=\"画像\">",
+    }
+}
+
+fn safe_html_preview(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut output = String::new();
+    let mut position = 0;
+    while position < html.len() {
+        let Some(relative_start) = html[position..].find('<') else {
+            output.push_str(&decode_html_entities(&html[position..]));
+            break;
+        };
+        let start = position + relative_start;
+        output.push_str(&decode_html_entities(&html[position..start]));
+        let Some(relative_end) = html[start..].find('>') else {
+            output.push_str(&decode_html_entities(&html[start..]));
+            break;
+        };
+        let end = start + relative_end;
+        let tag = lower[start + 1..end].trim();
+        if tag.starts_with("script") || tag.starts_with("style") {
+            let closing = if tag.starts_with("script") {
+                "</script"
+            } else {
+                "</style"
+            };
+            let Some(close_start) = lower[end + 1..].find(closing) else {
+                break;
+            };
+            let close_start = end + 1 + close_start;
+            let Some(close_end) = html[close_start..].find('>') else {
+                break;
+            };
+            position = close_start + close_end + 1;
+            continue;
+        }
+        if tag.starts_with("img") {
+            output.push_str("[画像]");
+        } else if tag == "br" || tag == "br/" || is_html_block_boundary(tag) {
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            if tag.starts_with("li") {
+                output.push_str("• ");
+            }
+        }
+        position = end + 1;
+    }
+    output
+        .lines()
+        .map(str::trim_end)
+        .fold(String::new(), |mut preview, line| {
+            if !preview.is_empty() {
+                preview.push('\n');
+            }
+            preview.push_str(line);
+            preview
+        })
+        .trim()
+        .to_string()
+}
+
+fn is_html_block_boundary(tag: &str) -> bool {
+    [
+        "p", "/p", "div", "/div", "h1", "/h1", "h2", "/h2", "h3", "/h3", "ul", "/ul", "ol", "/ol",
+        "li", "/li",
+    ]
+    .contains(&tag)
+}
+
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
 fn editor_toolbar(ui: &mut Ui, snippet: &mut Snippet) {
     ui.horizontal_wrapped(|ui| {
         if matches!(snippet.content_kind(), ContentKind::Markdown) {
@@ -2804,14 +2936,19 @@ fn editor_toolbar(ui: &mut Ui, snippet: &mut Snippet) {
                 snippet.insert_token("\n- 項目1\n- 項目2");
             }
         } else if matches!(snippet.content_kind(), ContentKind::Html) {
-            if ui.small_button("太字").clicked() {
-                snippet.insert_token("<strong>太字</strong>");
-            }
-            if ui.small_button("リンク").clicked() {
-                snippet.insert_token("<a href=\"https://example.com\">リンク</a>");
-            }
-            if ui.small_button("画像").clicked() {
-                snippet.insert_token("<img src=\"$CONFIG/assets/image.png\" alt=\"\">");
+            for (label, command) in [
+                ("太字", HtmlCommand::Bold),
+                ("斜体", HtmlCommand::Italic),
+                ("見出し", HtmlCommand::Heading),
+                ("リンク", HtmlCommand::Link),
+                ("箇条書き", HtmlCommand::UnorderedList),
+                ("番号リスト", HtmlCommand::OrderedList),
+                ("色", HtmlCommand::Color),
+                ("画像", HtmlCommand::Image),
+            ] {
+                if ui.small_button(label).clicked() {
+                    snippet.insert_token(html_fragment(command));
+                }
             }
         }
         if !matches!(snippet.content_kind(), ContentKind::Image)
@@ -3252,5 +3389,28 @@ mod tests {
     fn variable_labels_are_friendly() {
         assert_eq!(variable_kind_label("date"), "日付・時刻");
         assert_eq!(variable_kind_label("custom"), "カスタム");
+    }
+
+    #[test]
+    fn html_composer_emits_predictable_portable_fragments() {
+        assert_eq!(html_fragment(HtmlCommand::Bold), "<strong>太字</strong>");
+        assert_eq!(
+            html_fragment(HtmlCommand::UnorderedList),
+            "<ul><li>項目1</li><li>項目2</li></ul>"
+        );
+        assert!(html_fragment(HtmlCommand::Color).contains("color: #197966"));
+        assert!(html_fragment(HtmlCommand::Image).contains("$CONFIG/assets/image.png"));
+    }
+
+    #[test]
+    fn html_preview_never_exposes_active_content_or_remote_urls() {
+        let html = r#"<h2>Hello</h2><script>steal()</script><style>body{}</style><img src="https://example.com/tracker.png"><p>Safe &amp; sound</p>"#;
+        let preview = safe_html_preview(html);
+        assert!(preview.contains("Hello"));
+        assert!(preview.contains("[画像]"));
+        assert!(preview.contains("Safe & sound"));
+        assert!(!preview.contains("steal"));
+        assert!(!preview.contains("body"));
+        assert!(!preview.contains("https://"));
     }
 }
