@@ -22,6 +22,11 @@
   <url type="homepage">https://github.com/hjosugi/espanso-gui</url>
   <url type="bugtracker">https://github.com/hjosugi/espanso-gui/issues</url>
   <releases>
+    <release version="0.2.0" date="2026-08-15">
+      <description>
+        <p>Adds comment-preserving edits, app profiles, three-way conflict resolution, safe HTML composition, localization, accessibility controls, and optional release signing.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-15">
       <description>
         <p>Initial cross-platform preview release.</p>

@@ -13,6 +13,7 @@ EspansoのYAML設定を直接覚えなくても、スニペット、変数、フ
 
 - Three-pane snippet library with full-text search, labels, aliases, regex triggers, duplication, and safe deletion
 - Plain text, Markdown with live preview, HTML, image, and interactive form match editors
+- Safe visual HTML composer for emphasis, headings, links, lists, colors, and local images, with source mode always available
 - Point-and-click variable builder:
   - date/time, offsets, locale, and timezone
   - clipboard and fixed values
@@ -25,10 +26,13 @@ EspansoのYAML設定を直接覚えなくても、スニペット、変数、フ
 - Global variables, unresolved-variable diagnostics, and duplicate-trigger warnings
 - Raw YAML editor for advanced and future Espanso options
 - Existing unknown YAML fields are retained when structured data is loaded and saved
-- Optimistic concurrency checks to prevent overwriting edits from another program
-- Automatic pre-save backups and recoverable file deletion
+- Comment-preserving structured edits for unchanged YAML, including anchors, block scalars, and quoting
+- Visual app-specific profiles for filters, backends, delays, shortcuts, form sizing, and other documented configuration options
+- Local three-way conflict resolution with field-level choices when another program changes a loaded file
+- Persistent local backup history, one-click restoration, and recoverable file deletion
 - CSV import/export and full configuration snapshots
 - Espanso detection, status, start, stop, and restart controls
+- Japanese and English interface, 80–200% UI scaling, and keyboard navigation
 - Espanso Hub package files are read-only; individual matches can be copied to a user file
 - No telemetry, cloud service, account, or background network access
 
@@ -87,7 +91,7 @@ Shell and script variables execute local commands when their Espanso trigger run
 
 ## Supported Espanso syntax
 
-The editor currently models the Espanso 2 match format, including `trigger`, `triggers`, `regex`, `replace`, `markdown`, `html`, `image_path`, `form`, `form_fields`, `vars`, `global_vars`, word boundaries, case propagation, labels, search terms, force mode, and Markdown paragraph behavior. Unknown fields are kept for forward compatibility.
+The editor currently models the Espanso 2 match format, including `trigger`, `triggers`, `regex`, `replace`, `markdown`, `html`, `image_path`, `form`, `form_fields`, `vars`, `global_vars`, word boundaries, case propagation, labels, search terms, force mode, and Markdown paragraph behavior. It also edits app-specific `config/*.yml` filters and common configuration options. Unknown fields are kept for forward compatibility.
 
 See [Compatibility](docs/COMPATIBILITY.md) for details and known limitations.
 

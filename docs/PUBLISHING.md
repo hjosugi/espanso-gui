@@ -9,7 +9,7 @@ The public repository is `hjosugi/espanso-gui`. Releases are produced entirely b
 - Default branch: `main`
 - Release tags: `v<semantic-version>` matching `Cargo.toml`
 - Issue tracker: enabled
-- Discussions/wiki/projects: optional; not required for 0.1.0
+- Discussions/wiki/projects: optional
 - Espanso upstream: no writes, issues, pull requests, discussions, or contact
 
 ## Publish sequence
@@ -19,7 +19,7 @@ The public repository is `hjosugi/espanso-gui`. Releases are produced entirely b
 3. Update `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, AppStream metadata, and `docs/releases/v<version>.md` together.
 4. Push `main` to `hjosugi/espanso-gui:main`.
 5. Wait for the cross-platform CI matrix to pass.
-6. Dispatch the Release workflow on `main` as an unsigned packaging rehearsal and wait for all three package jobs.
+6. Dispatch the Release workflow on `main` as a packaging rehearsal and wait for all three package jobs.
 7. Create and push the annotated version tag only after both workflows succeed.
 8. Let the tag-triggered release workflow build artifacts and create the GitHub Release.
 9. Download the assets, verify `SHA256SUMS`, and check the signing-status section in the published notes.

@@ -36,10 +36,18 @@ Supported visual variables:
 
 Unknown or newly introduced fields remain in the data model and can be changed through Raw YAML.
 
-## Known limitations in 0.1
+Supported visual app-specific configuration:
 
-- Structured saves normalize YAML layout and do not preserve comment positions. Automatic backups retain the original.
-- HTML has a source preview rather than a complete browser rendering because the final rendering depends on the target application.
+- title, executable, class, and operating-system filters
+- enable/disable and injection backend selection
+- word, key, clipboard, and paste delays
+- paste and search shortcuts
+- form size, clipboard preservation, icon, and notification options
+
+## Known limitations in 0.2
+
+- Unchanged structured YAML items and profile fields are preserved byte for byte, but an edited fragment is serialized and may change its own formatting. Automatic backups retain the prior file.
+- HTML preview is deliberately text-only and never runs scripts or fetches remote resources; final rich-text rendering depends on Espanso and the target application.
 - Rich-text injection behavior is ultimately determined by Espanso and the target application.
-- Platform packages are unsigned until project signing identities are configured.
-- App-specific Espanso configuration profiles are visible only through external files; their visual editor is planned separately.
+- Windows and macOS packages remain unsigned when optional project signing identities are not configured; every release states the actual status.
+- AccessKit integration and automated contrast checks are shared across platforms, while Narrator, VoiceOver, and Orca still require a manual release audit.

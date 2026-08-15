@@ -1,6 +1,6 @@
 [package]
 name = "espanso-gui"
-version = "0.1.0"
+version = "0.2.0"
 description = "A polished cross-platform visual editor for Espanso"
 authors = ["hjosugi"]
 license = "MIT"
