@@ -380,7 +380,15 @@ fn is_yaml(path: &Path) -> bool {
 }
 
 fn hash(content: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(content))
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = Sha256::digest(content);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 fn milliseconds_since_epoch(value: SystemTime) -> u64 {
@@ -407,6 +415,14 @@ fn contains_yaml_comments(content: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn hashes_content_as_stable_lowercase_sha256() {
+        assert_eq!(
+            hash(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 
     #[test]
     fn initializes_and_loads_workspace() {
