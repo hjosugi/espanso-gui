@@ -30,7 +30,7 @@ jobs:
             formats: dmg
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify tag matches Cargo version
@@ -44,7 +44,7 @@ jobs:
       - name: Build packages
         run: cargo packager --release --formats ${{ matrix.formats }}
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: espanso-gui-${{ matrix.name }}
           path: |
@@ -59,11 +59,21 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
+      - name: Normalize asset filenames
+        shell: bash
+        run: |
+          while IFS= read -r -d '' asset; do
+            normalized="${asset// /.}"
+            if [[ "${normalized}" != "${asset}" ]]; then
+              [[ ! -e "${normalized}" ]]
+              mv "${asset}" "${normalized}"
+            fi
+          done < <(find release-assets -maxdepth 1 -type f -name '* *' -print0)
       - name: Generate checksums
         run: |
           (cd release-assets && find . -type f -print0 | sort -z | xargs -0 sha256sum) > SHA256SUMS
@@ -74,10 +84,20 @@ jobs:
         shell: bash
         run: |
           notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          notes=()
           if [[ -f "${notes_file}" ]]; then
+            notes=(--notes-file "${notes_file}")
+          fi
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS --clobber
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "Espanso GUI ${GITHUB_REF_NAME}" \
+              "${notes[@]}" \
+              --verify-tag
+          elif ((${#notes[@]})); then
             gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
               --title "Espanso GUI ${GITHUB_REF_NAME}" \
-              --notes-file "${notes_file}" \
+              "${notes[@]}" \
               --verify-tag
           else
             gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
