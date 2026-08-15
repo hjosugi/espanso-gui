@@ -40,7 +40,7 @@ Prebuilt packages will be attached to each GitHub Release:
 - macOS: application bundle/disk image produced by `cargo-packager`
 - Linux: platform packages such as AppImage and Debian package
 
-The first unsigned preview may trigger an operating-system security warning. Signing and notarization status is documented in each release.
+Unsigned builds may trigger an operating-system security warning. The release workflow supports optional Windows Authenticode signing and macOS Developer ID signing, notarization, and stapling. The actual status of every platform is documented in each release; see [Release signing and notarization](docs/SIGNING.md).
 
 Espanso itself is not bundled. Install and start Espanso separately, then launch Espanso GUI.
 
@@ -81,7 +81,7 @@ Espanso GUI edits only the configuration folder selected in the app. Before over
 - Recoverable deletions: `<espanso-config>/.espanso-gui/trash/`
 - Manual snapshots: destination selected by the user
 
-Structured editing preserves unknown YAML keys, but it may reformat the file and reposition or remove comments. The original commented file remains in the automatic backup. Use the Raw YAML tab when comment layout must remain untouched.
+Structured editing patches only changed YAML sequence items and top-level profile fields, preserving unchanged content—including comments, anchors, block scalars, quoting, and unknown fields—byte for byte. Any changed YAML fragment may still be reformatted. The original file remains in the automatic backup, and the Raw YAML tab is available when exact formatting of an edited fragment matters.
 
 Shell and script variables execute local commands when their Espanso trigger runs. Espanso GUI never executes those commands while editing; nevertheless, only save commands you have reviewed and trust.
 
@@ -97,7 +97,7 @@ Espanso GUI reads public Espanso documentation to remain compatible but does not
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and icon usage in [docs/BRANDING.md](docs/BRANDING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), release signing in [docs/SIGNING.md](docs/SIGNING.md), accessibility in [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md), and icon usage in [docs/BRANDING.md](docs/BRANDING.md).
 
 ## License
 

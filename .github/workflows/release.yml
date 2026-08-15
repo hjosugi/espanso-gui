@@ -41,8 +41,122 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v${version}"
       - name: Install cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
-      - name: Build packages
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Configure Linux signing status
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: echo "SIGNING_ENABLED=false" >> "${GITHUB_ENV}"
+      - name: Validate optional Windows signing secrets
+        if: matrix.name == 'windows-x86_64'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $provided = @(
+            $env:WINDOWS_CERTIFICATE_BASE64,
+            $env:WINDOWS_CERTIFICATE_PASSWORD
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($provided.Count -ne 0 -and $provided.Count -ne 2) {
+            throw "Configure both Windows signing secrets or neither"
+          }
+          $enabled = if ($provided.Count -eq 2) { "true" } else { "false" }
+          "SIGNING_ENABLED=$enabled" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Sign Windows application binary
+        if: matrix.name == 'windows-x86_64' && env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./scripts/sign-windows.ps1 -Path target/release/espanso-gui.exe
+      - name: Validate optional macOS signing secrets
+        if: matrix.name == 'macos-aarch64'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          provided=0
+          for value in \
+            "${APPLE_CERTIFICATE}" \
+            "${APPLE_CERTIFICATE_PASSWORD}" \
+            "${APPLE_SIGNING_IDENTITY}" \
+            "${APPLE_ID}" \
+            "${APPLE_PASSWORD}" \
+            "${APPLE_TEAM_ID}"; do
+            [[ -n "${value}" ]] && provided=$((provided + 1))
+          done
+          if [[ "${provided}" -ne 0 && "${provided}" -ne 6 ]]; then
+            echo "Configure all six macOS signing/notarization secrets or none" >&2
+            exit 1
+          fi
+          if [[ "${provided}" -eq 6 ]]; then
+            python scripts/configure-macos-signing.py
+            echo "SIGNING_ENABLED=true" >> "${GITHUB_ENV}"
+          else
+            echo "SIGNING_ENABLED=false" >> "${GITHUB_ENV}"
+          fi
+      - name: Build Linux and Windows packages
+        if: matrix.name != 'macos-aarch64'
         run: cargo packager --release --formats ${{ matrix.formats }}
+      - name: Build macOS packages
+        if: matrix.name == 'macos-aarch64'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: cargo packager --release --formats ${{ matrix.formats }}
+      - name: Sign Windows installers
+        if: matrix.name == 'windows-x86_64' && env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $artifacts = Get-ChildItem dist -Recurse -File |
+            Where-Object { $_.Extension -in ".exe", ".msi" }
+          if ($artifacts.Count -eq 0) {
+            throw "No Windows installer artifacts were found"
+          }
+          ./scripts/sign-windows.ps1 -Path $artifacts.FullName
+      - name: Notarize and staple macOS disk image
+        if: matrix.name == 'macos-aarch64' && env.SIGNING_ENABLED == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/notarize-macos-dmg.sh
+      - name: Record signing status
+        shell: bash
+        run: |
+          case "${{ matrix.name }}" in
+            windows-x86_64)
+              if [[ "${SIGNING_ENABLED}" == "true" ]]; then
+                status="Windows: Authenticode signed and SHA-256 timestamped; signatures verified."
+              else
+                status="Windows: unsigned (optional certificate secrets were not configured)."
+              fi
+              ;;
+            macos-aarch64)
+              if [[ "${SIGNING_ENABLED}" == "true" ]]; then
+                status="macOS: Developer ID signed with hardened runtime; app and DMG notarized and stapled."
+              else
+                status="macOS: unsigned and not notarized (optional Apple secrets were not configured)."
+              fi
+              ;;
+            *)
+              status="Linux: not code-signed; integrity is covered by the attached SHA-256 checksums."
+              ;;
+          esac
+          printf '%s\n' "- ${status}" > "dist/signing-status-${{ matrix.name }}.txt"
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
@@ -51,6 +165,13 @@ jobs:
             dist/**
             !dist/.cargo-packager/**
             !dist/**/*.app/**
+            !dist/signing-status-*.txt
+          if-no-files-found: error
+      - name: Upload signing status
+        uses: actions/upload-artifact@v7
+        with:
+          name: signing-status-${{ matrix.name }}
+          path: dist/signing-status-${{ matrix.name }}.txt
           if-no-files-found: error
 
   publish:
@@ -64,6 +185,26 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+      - name: Prepare release notes with signing status
+        shell: bash
+        run: |
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "${notes_file}" ]]; then
+            cp "${notes_file}" release-notes.md
+          else
+            printf '# Espanso GUI %s\n' "${GITHUB_REF_NAME}" > release-notes.md
+          fi
+          printf '\n## Signing status\n\n' >> release-notes.md
+          shopt -s nullglob
+          statuses=(release-assets/signing-status-*.txt)
+          if ((${#statuses[@]} != 3)); then
+            echo "Expected signing status from all three package jobs" >&2
+            exit 1
+          fi
+          for status in "${statuses[@]}"; do
+            cat "${status}" >> release-notes.md
+            rm "${status}"
+          done
       - name: Normalize asset filenames
         shell: bash
         run: |
@@ -83,25 +224,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
-          notes=()
-          if [[ -f "${notes_file}" ]]; then
-            notes=(--notes-file "${notes_file}")
-          fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS --clobber
             gh release edit "${GITHUB_REF_NAME}" \
               --title "Espanso GUI ${GITHUB_REF_NAME}" \
-              "${notes[@]}" \
-              --verify-tag
-          elif ((${#notes[@]})); then
-            gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
-              --title "Espanso GUI ${GITHUB_REF_NAME}" \
-              "${notes[@]}" \
+              --notes-file release-notes.md \
               --verify-tag
           else
             gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
               --title "Espanso GUI ${GITHUB_REF_NAME}" \
-              --generate-notes \
+              --notes-file release-notes.md \
               --verify-tag
           fi
