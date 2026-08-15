@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a reproducible Espanso GUI problem
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. This tracker is for Espanso GUI only. Do not report this issue to the Espanso project.
+  - type: input
+    id: version
+    attributes:
+      label: Espanso GUI version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: input
+    id: espanso-version
+    attributes:
+      label: Espanso version
+      description: Use a placeholder if Espanso is not installed.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Remove private snippet content, credentials, and personal paths.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics or sample YAML
+      render: yaml
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy and project boundary
+      options:
+        - label: I removed secrets and personal data.
+          required: true
+        - label: I understand this issue belongs to Espanso GUI, not the Espanso project.
+          required: true

@@ -1,0 +1,67 @@
+[package]
+name = "espanso-gui"
+version = "0.1.0"
+description = "A polished cross-platform visual editor for Espanso"
+authors = ["hjosugi"]
+license = "MIT"
+repository = "https://github.com/hjosugi/espanso-gui"
+homepage = "https://github.com/hjosugi/espanso-gui"
+keywords = ["espanso", "text-expander", "gui", "productivity"]
+categories = ["gui", "text-editors"]
+edition = "2024"
+rust-version = "1.95"
+
+[[bin]]
+name = "espanso-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+atomic-write-file = "0.3.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
+csv = "1.4.0"
+directories = "6.0.0"
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "persistence", "wayland", "wgpu", "x11"] }
+egui_extras = { version = "0.36.1", features = ["all_loaders", "image"] }
+egui_commonmark = "0.25.0"
+fontdb = "0.24.0"
+indexmap = { version = "2.14.0", features = ["serde"] }
+open = "5.3.3"
+rfd = "0.17.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10.0"
+sha2 = "0.10.9"
+thiserror = "2.0"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+tempfile = "3.23.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[package.metadata.packager]
+product-name = "Espanso GUI"
+identifier = "dev.hjosugi.espanso-gui"
+long-description = "An independent, unofficial visual editor for Espanso 2 configuration. Create and manage snippets, rich content, variables, forms, and global variables without hand-editing YAML."
+category = "Productivity"
+icons = ["icons/icon.png", "icons/icon.ico"]
+formats = ["all"]
+before-packaging-command = "cargo build --release"
+out-dir = "dist"
+license-file = "LICENSE"
+publisher = "hjosugi"
+copyright = "Copyright © 2026 hjosugi"
+
+[package.metadata.packager.deb]
+files = { "packaging/dev.hjosugi.espanso-gui.metainfo.xml" = "usr/share/metainfo/dev.hjosugi.espanso-gui.metainfo.xml" }
+
+[package.metadata.packager.appimage]
+files = { "packaging/dev.hjosugi.espanso-gui.metainfo.xml" = "usr/share/metainfo/dev.hjosugi.espanso-gui.metainfo.xml" }
+
+[package.metadata.packager.pacman]
+files = { "packaging/dev.hjosugi.espanso-gui.metainfo.xml" = "usr/share/metainfo/dev.hjosugi.espanso-gui.metainfo.xml" }

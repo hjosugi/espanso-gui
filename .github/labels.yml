@@ -1,0 +1,36 @@
+- name: bug
+  color: d73a4a
+  description: Something is not working
+- name: enhancement
+  color: a2eeef
+  description: New or improved user-facing behavior
+- name: triage
+  color: fbca04
+  description: Needs review and prioritization
+- name: data-safety
+  color: b60205
+  description: Backups, recovery, conflicts, or user-data integrity
+- name: yaml
+  color: 5319e7
+  description: Espanso YAML parsing or serialization
+- name: configuration
+  color: 1d76db
+  description: Espanso configuration support
+- name: release
+  color: 0e8a16
+  description: Packaging and publishing
+- name: security
+  color: b60205
+  description: Security hardening
+- name: platform
+  color: c5def5
+  description: Windows, macOS, or Linux-specific work
+- name: accessibility
+  color: 7057ff
+  description: Keyboard, screen reader, contrast, or scalable UI
+- name: i18n
+  color: d4c5f9
+  description: Localization and language support
+- name: rich-text
+  color: f9d0c4
+  description: Markdown, HTML, image, or formatting editor

@@ -1,0 +1,13 @@
+target/
+dist/
+.cargo-packager/
+.DS_Store
+*.log
+.idea/
+.vscode/
+coverage/
+*.AppImage
+*.dmg
+*.msi
+*.deb
+*.rpm
