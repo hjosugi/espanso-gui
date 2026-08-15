@@ -88,6 +88,78 @@ pub struct FormField {
     pub extra: IndexMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ConfigProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_exec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_os: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_patch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_paste_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste_shortcut_event_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_form_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_search_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste_shortcut: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_form_width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_form_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_shortcut: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_clipboard: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_icon: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_notifications: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toggle_key: Option<String>,
+    #[serde(flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+impl ConfigProfile {
+    pub fn from_yaml(content: &str) -> Result<Self, serde_yaml_ng::Error> {
+        serde_yaml_ng::from_str(content)
+    }
+
+    pub fn to_yaml(&self) -> Result<String, serde_yaml_ng::Error> {
+        serde_yaml_ng::to_string(self)
+    }
+
+    pub fn has_filter(&self) -> bool {
+        [
+            self.filter_title.as_deref(),
+            self.filter_exec.as_deref(),
+            self.filter_class.as_deref(),
+            self.filter_os.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentKind {
     Plain,
@@ -587,6 +659,29 @@ matches:
         assert_eq!(
             variable_references("{{date}} / {{ form1.name }}"),
             vec!["date", "form1.name"]
+        );
+    }
+
+    #[test]
+    fn config_profile_round_trips_documented_and_unknown_options() {
+        let yaml = r#"filter_exec: Code|VSCodium
+enable: true
+backend: clipboard
+key_delay: 5
+max_form_width: 900
+future_option: keep-me
+"#;
+        let profile = ConfigProfile::from_yaml(yaml).unwrap();
+        assert!(profile.has_filter());
+        assert_eq!(profile.backend.as_deref(), Some("clipboard"));
+        assert_eq!(profile.key_delay, Some(5));
+        assert_eq!(
+            profile.extra.get("future_option"),
+            Some(&Value::String("keep-me".into()))
+        );
+        assert_eq!(
+            ConfigProfile::from_yaml(&profile.to_yaml().unwrap()).unwrap(),
+            profile
         );
     }
 }

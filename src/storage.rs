@@ -1,5 +1,5 @@
 use crate::lossless_yaml;
-use crate::model::{MatchFile, Snippet};
+use crate::model::{ConfigProfile, MatchFile, Snippet};
 use atomic_write_file::AtomicWriteFile;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -37,6 +37,38 @@ pub struct WorkspaceFile {
     pub is_package: bool,
     pub dirty: bool,
     pub had_comments: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigFile {
+    pub relative_path: PathBuf,
+    pub display_name: String,
+    pub profile: ConfigProfile,
+    pub raw_yaml: String,
+    pub saved_hash: String,
+    pub modified_ms: u64,
+    pub is_default: bool,
+    pub dirty: bool,
+    pub had_comments: bool,
+}
+
+impl ConfigFile {
+    pub fn refresh_raw_from_profile(&mut self) -> StorageResult<()> {
+        self.raw_yaml = match ConfigProfile::from_yaml(&self.raw_yaml) {
+            Ok(previous) => {
+                lossless_yaml::patch_config_profile(&self.raw_yaml, &previous, &self.profile)?
+            }
+            Err(_) => self.profile.to_yaml()?,
+        };
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn apply_raw_yaml(&mut self) -> StorageResult<()> {
+        self.profile = ConfigProfile::from_yaml(&self.raw_yaml)?;
+        self.dirty = true;
+        Ok(())
+    }
 }
 
 impl WorkspaceFile {
@@ -135,6 +167,63 @@ pub fn load_workspace(root: &Path) -> StorageResult<Vec<WorkspaceFile>> {
     Ok(files)
 }
 
+pub fn load_config_profiles(root: &Path) -> StorageResult<Vec<ConfigFile>> {
+    let root = canonical_root(root)?;
+    let config_root = root.join("config");
+    if !config_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    for entry in WalkDir::new(&config_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if !is_yaml(path) {
+            continue;
+        }
+        let canonical = path.canonicalize()?;
+        if !canonical.starts_with(&config_root) {
+            continue;
+        }
+        let metadata = canonical.metadata()?;
+        if metadata.len() > MAX_CONFIG_FILE_BYTES {
+            continue;
+        }
+        let raw_yaml = fs::read_to_string(&canonical)?;
+        let profile = ConfigProfile::from_yaml(&raw_yaml)
+            .map_err(|error| StorageError::Message(format!("{}: {error}", canonical.display())))?;
+        let relative_path = canonical
+            .strip_prefix(&root)
+            .map_err(|_| StorageError::Message("設定ファイルのパスを解決できません".into()))?
+            .to_path_buf();
+        files.push(ConfigFile {
+            display_name: canonical
+                .file_stem()
+                .and_then(OsStr::to_str)
+                .unwrap_or("profile")
+                .to_string(),
+            is_default: relative_path == Path::new("config/default.yml")
+                || relative_path == Path::new("config/default.yaml"),
+            relative_path,
+            profile,
+            saved_hash: hash(raw_yaml.as_bytes()),
+            modified_ms: metadata
+                .modified()
+                .map(milliseconds_since_epoch)
+                .unwrap_or_default(),
+            dirty: false,
+            had_comments: contains_yaml_comments(&raw_yaml),
+            raw_yaml,
+        });
+    }
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(files)
+}
+
 pub fn create_match_file(root: &Path, name: &str) -> StorageResult<WorkspaceFile> {
     let safe_name = normalize_file_name(name)?;
     let relative = PathBuf::from("match").join(format!("{safe_name}.yml"));
@@ -162,11 +251,70 @@ pub fn create_match_file(root: &Path, name: &str) -> StorageResult<WorkspaceFile
     })
 }
 
+pub fn create_config_file(root: &Path, name: &str) -> StorageResult<ConfigFile> {
+    let safe_name = normalize_file_name(name)?;
+    let relative = PathBuf::from("config").join(format!("{safe_name}.yml"));
+    let root = canonical_root(root)?;
+    let target = checked_config_target(&root, &relative)?;
+    if target.exists() {
+        return Err(StorageError::Message(format!(
+            "{} はすでに存在します",
+            target.display()
+        )));
+    }
+    let profile = ConfigProfile::default();
+    let raw_yaml = profile.to_yaml()?;
+    atomic_write(&target, raw_yaml.as_bytes())?;
+    Ok(ConfigFile {
+        relative_path: relative,
+        display_name: safe_name.clone(),
+        profile,
+        saved_hash: hash(raw_yaml.as_bytes()),
+        modified_ms: milliseconds_since_epoch(SystemTime::now()),
+        is_default: safe_name == "default",
+        dirty: false,
+        had_comments: false,
+        raw_yaml,
+    })
+}
+
 pub fn save_workspace_file(root: &Path, file: &mut WorkspaceFile) -> StorageResult<SaveReceipt> {
     file.apply_raw_yaml()?;
     let root = canonical_root(root)?;
     let relative = validate_relative_path(&file.relative_path)?;
     let target = checked_target(&root, &relative)?;
+    if target.exists() {
+        let current = fs::read(&target)?;
+        let current_hash = hash(&current);
+        if current_hash != file.saved_hash {
+            return Err(StorageError::Message(
+                "ファイルが他のアプリで変更されました。再読み込みしてから保存してください".into(),
+            ));
+        }
+    } else if !file.saved_hash.is_empty() {
+        return Err(StorageError::Message(
+            "保存先が削除されています。再読み込みしてください".into(),
+        ));
+    }
+
+    let backup_path = backup_file(&root, &relative, &target)?;
+    atomic_write(&target, file.raw_yaml.as_bytes())?;
+    let saved_hash = hash(file.raw_yaml.as_bytes());
+    file.saved_hash.clone_from(&saved_hash);
+    file.modified_ms = milliseconds_since_epoch(SystemTime::now());
+    file.dirty = false;
+    file.had_comments = contains_yaml_comments(&file.raw_yaml);
+    Ok(SaveReceipt {
+        hash: saved_hash,
+        backup_path,
+    })
+}
+
+pub fn save_config_file(root: &Path, file: &mut ConfigFile) -> StorageResult<SaveReceipt> {
+    file.apply_raw_yaml()?;
+    let root = canonical_root(root)?;
+    let relative = validate_config_relative_path(&file.relative_path)?;
+    let target = checked_config_target(&root, &relative)?;
     if target.exists() {
         let current = fs::read(&target)?;
         let current_hash = hash(&current);
@@ -331,8 +479,66 @@ fn validate_relative_path(path: &Path) -> StorageResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn validate_config_relative_path(path: &Path) -> StorageResult<PathBuf> {
+    validate_relative_yaml_path(
+        path,
+        "config",
+        "設定プロファイルはconfigフォルダ内に保存してください",
+    )
+}
+
+fn validate_relative_yaml_path(
+    path: &Path,
+    required_root: &str,
+    wrong_root_message: &str,
+) -> StorageResult<PathBuf> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(StorageError::Message("相対パスを指定してください".into()));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(StorageError::Message(
+            "設定フォルダ外のパスは使用できません".into(),
+        ));
+    }
+    let mut components = path.components().filter_map(|component| match component {
+        Component::Normal(value) => Some(value),
+        _ => None,
+    });
+    if components.next() != Some(OsStr::new(required_root)) {
+        return Err(StorageError::Message(wrong_root_message.into()));
+    }
+    if !is_yaml(path) {
+        return Err(StorageError::Message(
+            "拡張子は.ymlまたは.yamlにしてください".into(),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
 fn checked_target(root: &Path, relative: &Path) -> StorageResult<PathBuf> {
     let relative = validate_relative_path(relative)?;
+    let target = root.join(relative);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+        let parent = parent.canonicalize()?;
+        if !parent.starts_with(root) {
+            return Err(StorageError::Message(
+                "設定フォルダ外には保存できません".into(),
+            ));
+        }
+    }
+    Ok(target)
+}
+
+fn checked_config_target(root: &Path, relative: &Path) -> StorageResult<PathBuf> {
+    let relative = validate_config_relative_path(relative)?;
+    checked_validated_target(root, &relative)
+}
+
+fn checked_validated_target(root: &Path, relative: &Path) -> StorageResult<PathBuf> {
     let target = root.join(relative);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
@@ -495,6 +701,24 @@ mod tests {
     fn rejects_unsafe_paths_and_file_names() {
         assert!(validate_relative_path(Path::new("../secret.yml")).is_err());
         assert!(validate_relative_path(Path::new("config/default.yml")).is_err());
+        assert!(validate_config_relative_path(Path::new("../secret.yml")).is_err());
+        assert!(validate_config_relative_path(Path::new("match/base.yml")).is_err());
         assert!(normalize_file_name("../../oops").is_err());
+    }
+
+    #[test]
+    fn config_profile_save_is_validated_atomic_and_backed_up() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_root(temp.path()).unwrap();
+        let mut file = create_config_file(temp.path(), "telegram").unwrap();
+        file.profile.filter_exec = Some("Telegram".into());
+        file.profile.enable = Some(false);
+        file.refresh_raw_from_profile().unwrap();
+
+        let receipt = save_config_file(temp.path(), &mut file).unwrap();
+        assert!(receipt.backup_path.unwrap().is_file());
+        let saved = fs::read_to_string(temp.path().join("config/telegram.yml")).unwrap();
+        assert!(saved.contains("filter_exec: Telegram"));
+        assert!(saved.contains("enable: false"));
     }
 }

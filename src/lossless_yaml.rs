@@ -1,4 +1,4 @@
-use crate::model::MatchFile;
+use crate::model::{ConfigProfile, MatchFile};
 use serde::Serialize;
 
 pub fn patch_match_file(
@@ -23,6 +23,118 @@ pub fn patch_match_file(
         &next.global_vars,
     )?;
     patch_sequence(&patched, "matches", &previous.matches, &next.matches)
+}
+
+pub fn patch_config_profile(
+    source: &str,
+    previous: &ConfigProfile,
+    next: &ConfigProfile,
+) -> Result<String, serde_yaml_ng::Error> {
+    if previous == next {
+        return Ok(source.to_string());
+    }
+    if previous.extra != next.extra {
+        return next.to_yaml();
+    }
+
+    const KEYS: [&str; 22] = [
+        "filter_title",
+        "filter_exec",
+        "filter_class",
+        "filter_os",
+        "enable",
+        "backend",
+        "apply_patch",
+        "inject_delay",
+        "key_delay",
+        "pre_paste_delay",
+        "paste_shortcut_event_delay",
+        "post_form_delay",
+        "post_search_delay",
+        "paste_shortcut",
+        "max_form_width",
+        "max_form_height",
+        "search_shortcut",
+        "search_trigger",
+        "preserve_clipboard",
+        "show_icon",
+        "show_notifications",
+        "toggle_key",
+    ];
+    let previous_value = serde_yaml_ng::to_value(previous)?;
+    let next_value = serde_yaml_ng::to_value(next)?;
+    let mut output = if source.trim() == "{}" {
+        String::new()
+    } else {
+        source.to_string()
+    };
+    for key in KEYS {
+        let old = mapping_value(&previous_value, key);
+        let new = mapping_value(&next_value, key);
+        if old != new {
+            output = patch_top_level_value(&output, key, new)?;
+        }
+    }
+    Ok(output)
+}
+
+fn mapping_value<'a>(
+    value: &'a serde_yaml_ng::Value,
+    key: &str,
+) -> Option<&'a serde_yaml_ng::Value> {
+    value
+        .as_mapping()
+        .and_then(|mapping| mapping.get(serde_yaml_ng::Value::String(key.into())))
+}
+
+fn patch_top_level_value(
+    source: &str,
+    key: &str,
+    value: Option<&serde_yaml_ng::Value>,
+) -> Result<String, serde_yaml_ng::Error> {
+    let line_ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let existing = lines.iter().position(|line| is_top_level_key(line, key));
+    let replacement = if let Some(value) = value {
+        let mut mapping = serde_yaml_ng::Mapping::new();
+        mapping.insert(serde_yaml_ng::Value::String(key.into()), value.clone());
+        let serialized = serde_yaml_ng::to_string(&mapping)?;
+        let first_line = serialized.lines().next().unwrap_or_default();
+        let comment = existing
+            .and_then(|index| {
+                strip_line_ending(lines[index])
+                    .find('#')
+                    .map(|at| (index, at))
+            })
+            .map(|(index, at)| strip_line_ending(lines[index])[at..].trim_end());
+        format!(
+            "{first_line}{}{line_ending}",
+            comment.map(|value| format!(" {value}")).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+
+    if let Some(index) = existing {
+        let mut output = String::new();
+        output.push_str(&lines[..index].concat());
+        output.push_str(&replacement);
+        output.push_str(&lines[index + 1..].concat());
+        Ok(output)
+    } else if value.is_some() {
+        let mut output = source.to_string();
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push_str(line_ending);
+        }
+        output.push_str(&replacement);
+        Ok(output)
+    } else {
+        Ok(source.to_string())
+    }
 }
 
 fn patch_sequence<T>(
@@ -336,5 +448,20 @@ matches:
         assert!(output.contains("  - trigger: :one\n    replace: one\n"));
         assert!(output.contains("  - trigger: :two\n    replace: two\n"));
         assert_eq!(MatchFile::from_yaml(&output).unwrap(), next);
+    }
+
+    #[test]
+    fn config_profile_patch_changes_only_the_selected_option_line() {
+        let source = "# profile\nfilter_exec: 'Code|VSCodium' # regex\ncustom: &value keep\nbackend: auto\nfuture: *value\n";
+        let previous = ConfigProfile::from_yaml(source).unwrap();
+        let mut next = previous.clone();
+        next.backend = Some("clipboard".into());
+
+        let output = patch_config_profile(source, &previous, &next).unwrap();
+        assert!(output.starts_with("# profile\nfilter_exec: 'Code|VSCodium' # regex\n"));
+        assert!(output.contains("custom: &value keep\n"));
+        assert!(output.contains("backend: clipboard\n"));
+        assert!(output.ends_with("future: *value\n"));
+        assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
     }
 }

@@ -1,6 +1,6 @@
 use crate::espanso::{self, EspansoAction, EspansoStatus};
 use crate::model::{ContentKind, DiagnosticLevel, FormField, Snippet, Variable};
-use crate::storage::{self, WorkspaceFile};
+use crate::storage::{self, ConfigFile, WorkspaceFile};
 use crate::theme;
 use eframe::egui::{
     self, Align, Button, Color32, ComboBox, FontFamily, FontId, Frame, Key, Layout, Margin,
@@ -15,6 +15,7 @@ const APP_STORAGE_KEY: &str = "espanso-gui.preferences";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Library,
+    Profiles,
     Globals,
     Diagnostics,
     Settings,
@@ -97,7 +98,9 @@ pub struct EspansoGuiApp {
     preferences: Preferences,
     status: EspansoStatus,
     files: Vec<WorkspaceFile>,
+    config_files: Vec<ConfigFile>,
     selected_file: usize,
+    selected_config: usize,
     selected_snippet: usize,
     section: Section,
     editor_tab: EditorTab,
@@ -106,6 +109,9 @@ pub struct EspansoGuiApp {
     load_error: Option<String>,
     new_file_dialog: bool,
     new_file_name: String,
+    new_config_dialog: bool,
+    new_config_name: String,
+    profile_raw_yaml: bool,
     variable_editor: Option<VariableEditor>,
     form_field_editor: Option<FormFieldEditor>,
     pending_delete: Option<PendingDelete>,
@@ -127,20 +133,30 @@ impl EspansoGuiApp {
         if preferences.config_root.as_os_str().is_empty() {
             preferences.config_root.clone_from(&status.config_root);
         }
-        let (files, load_error) = if preferences.config_root.join("match").is_dir() {
-            match storage::load_workspace(&preferences.config_root) {
-                Ok(files) => (files, None),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            }
+        let (files, config_files, load_error) = if preferences.config_root.join("match").is_dir() {
+            let matches = storage::load_workspace(&preferences.config_root);
+            let profiles = storage::load_config_profiles(&preferences.config_root);
+            let load_error = matches
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .or_else(|| profiles.as_ref().err().map(ToString::to_string));
+            (
+                matches.unwrap_or_default(),
+                profiles.unwrap_or_default(),
+                load_error,
+            )
         } else {
-            (Vec::new(), None)
+            (Vec::new(), Vec::new(), None)
         };
 
         Self {
             preferences,
             status,
             files,
+            config_files,
             selected_file: 0,
+            selected_config: 0,
             selected_snippet: 0,
             section: Section::Library,
             editor_tab: EditorTab::Content,
@@ -149,6 +165,9 @@ impl EspansoGuiApp {
             load_error,
             new_file_dialog: false,
             new_file_name: "snippets".into(),
+            new_config_dialog: false,
+            new_config_name: "application".into(),
+            profile_raw_yaml: false,
             variable_editor: None,
             form_field_editor: None,
             pending_delete: None,
@@ -158,7 +177,7 @@ impl EspansoGuiApp {
     }
 
     fn has_dirty_files(&self) -> bool {
-        self.files.iter().any(|file| file.dirty)
+        self.files.iter().any(|file| file.dirty) || self.config_files.iter().any(|file| file.dirty)
     }
 
     fn selected_file(&self) -> Option<&WorkspaceFile> {
@@ -184,15 +203,22 @@ impl EspansoGuiApp {
             );
             return;
         }
-        match storage::load_workspace(&self.preferences.config_root) {
-            Ok(files) => {
+        match (
+            storage::load_workspace(&self.preferences.config_root),
+            storage::load_config_profiles(&self.preferences.config_root),
+        ) {
+            (Ok(files), Ok(config_files)) => {
                 self.files = files;
+                self.config_files = config_files;
                 self.selected_file = self.selected_file.min(self.files.len().saturating_sub(1));
+                self.selected_config = self
+                    .selected_config
+                    .min(self.config_files.len().saturating_sub(1));
                 self.selected_snippet = 0;
                 self.load_error = None;
                 self.notify(MessageKind::Success, "Espanso設定を再読み込みしました");
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            (Err(error), _) | (_, Err(error)) => self.notify(MessageKind::Error, error.to_string()),
         }
     }
 
@@ -220,6 +246,37 @@ impl EspansoGuiApp {
                 );
             }
             Err(error) => self.notify(MessageKind::Error, error.to_string()),
+        }
+    }
+
+    fn save_selected_config(&mut self) {
+        let root = self.preferences.config_root.clone();
+        let Some(file) = self.config_files.get_mut(self.selected_config) else {
+            return;
+        };
+        match storage::save_config_file(&root, file) {
+            Ok(receipt) => {
+                let backup = receipt
+                    .backup_path
+                    .map(|path| format!(" / バックアップ: {}", path.display()))
+                    .unwrap_or_default();
+                self.notify(
+                    MessageKind::Success,
+                    format!(
+                        "設定プロファイルを保存しました{backup} / {}",
+                        &receipt.hash[..8]
+                    ),
+                );
+            }
+            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+        }
+    }
+
+    fn save_current(&mut self) {
+        if self.section == Section::Profiles {
+            self.save_selected_config();
+        } else {
+            self.save_selected();
         }
     }
 
@@ -343,6 +400,24 @@ impl EspansoGuiApp {
         }
     }
 
+    fn create_config_file(&mut self) {
+        match storage::create_config_file(&self.preferences.config_root, &self.new_config_name) {
+            Ok(file) => {
+                self.config_files.push(file);
+                self.config_files
+                    .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+                self.selected_config = self
+                    .config_files
+                    .iter()
+                    .position(|file| file.display_name == self.new_config_name.trim())
+                    .unwrap_or_default();
+                self.new_config_dialog = false;
+                self.notify(MessageKind::Success, "設定プロファイルを作成しました");
+            }
+            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+        }
+    }
+
     fn delete_selected_file(&mut self) {
         let Some(file) = self.selected_file() else {
             return;
@@ -418,7 +493,7 @@ impl EspansoGuiApp {
         let save = ui.input(|input| input.modifiers.command && input.key_pressed(Key::S));
         let new = ui.input(|input| input.modifiers.command && input.key_pressed(Key::N));
         if save {
-            self.save_selected();
+            self.save_current();
         }
         if new && self.section == Section::Library {
             self.add_snippet();
@@ -426,6 +501,11 @@ impl EspansoGuiApp {
     }
 
     fn top_bar(&mut self, ui: &mut Ui) {
+        let can_save = if self.section == Section::Profiles {
+            !self.config_files.is_empty()
+        } else {
+            self.selected_file().is_some_and(|file| !file.is_package)
+        };
         egui::Panel::top("top-bar")
             .frame(
                 Frame::new()
@@ -442,14 +522,14 @@ impl EspansoGuiApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add_enabled(
-                                self.selected_file().is_some_and(|file| !file.is_package),
+                                can_save,
                                 Button::new(RichText::new("保存  ⌘S").strong())
                                     .fill(theme::ACCENT)
                                     .stroke(Stroke::NONE),
                             )
                             .clicked()
                         {
-                            self.save_selected();
+                            self.save_current();
                         }
                         if ui.button("再読み込み").clicked() {
                             self.reload_workspace();
@@ -482,11 +562,18 @@ impl EspansoGuiApp {
                 nav_button(
                     ui,
                     &mut self.section,
-                    Section::Globals,
-                    "グローバル変数",
+                    Section::Profiles,
+                    "アプリ別設定",
                     "⌘2",
                 );
-                nav_button(ui, &mut self.section, Section::Diagnostics, "診断", "⌘3");
+                nav_button(
+                    ui,
+                    &mut self.section,
+                    Section::Globals,
+                    "グローバル変数",
+                    "⌘3",
+                );
+                nav_button(ui, &mut self.section, Section::Diagnostics, "診断", "⌘4");
                 ui.add_space(16.0);
                 ui.label(RichText::new("Espanso").small().color(theme::MUTED));
                 ui.add_space(4.0);
@@ -1204,6 +1291,336 @@ impl EspansoGuiApp {
         }
     }
 
+    fn profiles_view(&mut self, ui: &mut Ui) {
+        egui::Panel::left("profile-list")
+            .exact_size(280.0)
+            .resizable(true)
+            .size_range(240.0..=380.0)
+            .frame(
+                Frame::new()
+                    .fill(theme::PANEL)
+                    .inner_margin(Margin::same(14))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(218, 220, 212))),
+            )
+            .show(ui, |ui| {
+                ui.heading("設定プロファイル");
+                ui.label(
+                    RichText::new("config/*.yml")
+                        .family(FontFamily::Monospace)
+                        .small()
+                        .color(theme::MUTED),
+                );
+                ui.separator();
+                ScrollArea::vertical()
+                    .id_salt("profile-file-list")
+                    .show(ui, |ui| {
+                        for (index, file) in self.config_files.iter().enumerate() {
+                            let dirty = if file.dirty { " •" } else { "" };
+                            let kind = if file.is_default {
+                                "既定"
+                            } else if file.profile.has_filter() {
+                                "アプリ別"
+                            } else {
+                                "フィルター未設定"
+                            };
+                            if ui
+                                .add_sized(
+                                    [250.0, 48.0],
+                                    Button::new(format!("{}{dirty}\n{kind}", file.display_name))
+                                        .selected(self.selected_config == index),
+                                )
+                                .clicked()
+                            {
+                                self.selected_config = index;
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
+                if ui
+                    .add_sized([250.0, 34.0], Button::new("＋ プロファイルを追加"))
+                    .clicked()
+                {
+                    self.new_config_dialog = true;
+                }
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                Frame::new()
+                    .fill(theme::PAPER)
+                    .inner_margin(Margin::same(22)),
+            )
+            .show(ui, |ui| {
+                if self.config_files.is_empty() {
+                    centered_empty_state(
+                        ui,
+                        "設定プロファイルがありません",
+                        "default またはアプリ別プロファイルを追加できます。",
+                    );
+                    if ui.button("最初のプロファイルを追加").clicked() {
+                        self.new_config_dialog = true;
+                    }
+                    return;
+                }
+
+                let index = self
+                    .selected_config
+                    .min(self.config_files.len().saturating_sub(1));
+                self.selected_config = index;
+                let file = &self.config_files[index];
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.heading(&file.display_name);
+                        ui.label(
+                            RichText::new(file.relative_path.display().to_string())
+                                .family(FontFamily::Monospace)
+                                .small()
+                                .color(theme::MUTED),
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.selectable_value(&mut self.profile_raw_yaml, true, "Raw YAML");
+                        ui.selectable_value(&mut self.profile_raw_yaml, false, "ビジュアル");
+                    });
+                });
+                ui.separator();
+
+                if self.profile_raw_yaml {
+                    self.profile_raw_editor(ui, index);
+                } else {
+                    self.profile_visual_editor(ui, index);
+                }
+            });
+    }
+
+    fn profile_visual_editor(&mut self, ui: &mut Ui, index: usize) {
+        let is_default = self.config_files[index].is_default;
+        let original = self.config_files[index].profile.clone();
+        let mut profile = original.clone();
+
+        ScrollArea::vertical()
+            .id_salt("profile-editor-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if is_default {
+                    callout(
+                        ui,
+                        theme::ACCENT,
+                        "default.yml はすべてのアプリの基準です。アプリ別ファイルはここで設定した値を継承します。",
+                    );
+                } else {
+                    callout(
+                        ui,
+                        theme::ACCENT,
+                        "フィルターは正規表現です。WaylandではEspansoのアプリ別設定自体が未対応です。",
+                    );
+                    ui.add_space(10.0);
+                    ui.heading("適用するアプリ");
+                    optional_text_field(
+                        ui,
+                        &mut profile.filter_exec,
+                        "実行ファイル（filter_exec）",
+                        "例: Code|VSCodium",
+                    );
+                    optional_text_field(
+                        ui,
+                        &mut profile.filter_class,
+                        "ウィンドウクラス（filter_class）",
+                        "Linuxでは最も安定した指定",
+                    );
+                    optional_text_field(
+                        ui,
+                        &mut profile.filter_title,
+                        "ウィンドウタイトル（filter_title）",
+                        "例: YouTube",
+                    );
+                    two_column_field(ui, "OS（filter_os）", "共有設定のOS限定", |ui| {
+                        ComboBox::from_id_salt("profile-filter-os")
+                            .selected_text(profile.filter_os.as_deref().unwrap_or("継承"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut profile.filter_os, None, "継承");
+                                for value in ["linux", "macos", "windows"] {
+                                    ui.selectable_value(
+                                        &mut profile.filter_os,
+                                        Some(value.into()),
+                                        value,
+                                    );
+                                }
+                            });
+                    });
+                    if !profile.has_filter() {
+                        callout(
+                            ui,
+                            theme::AMBER,
+                            "アプリ別ファイルには filter_exec、filter_class、filter_title、filter_os のいずれかが必要です。",
+                        );
+                    }
+                }
+
+                ui.add_space(16.0);
+                ui.heading("動作と注入");
+                optional_bool_field(
+                    ui,
+                    &mut profile.enable,
+                    "Espansoを有効化",
+                    "未指定なら既定設定を継承",
+                );
+                two_column_field(ui, "注入方式（backend）", "auto / inject / clipboard", |ui| {
+                    ComboBox::from_id_salt("profile-backend")
+                        .selected_text(profile.backend.as_deref().unwrap_or("継承"))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut profile.backend, None, "継承");
+                            for (value, label) in [
+                                ("auto", "自動"),
+                                ("inject", "キー注入"),
+                                ("clipboard", "クリップボード"),
+                            ] {
+                                ui.selectable_value(
+                                    &mut profile.backend,
+                                    Some(value.into()),
+                                    label,
+                                );
+                            }
+                        });
+                });
+                optional_bool_field(
+                    ui,
+                    &mut profile.apply_patch,
+                    "組み込みpatchを適用",
+                    "terminal等へのEspanso既定補正",
+                );
+                optional_text_field(
+                    ui,
+                    &mut profile.paste_shortcut,
+                    "貼り付けshortcut",
+                    "例: CTRL+SHIFT+V",
+                );
+
+                ui.add_space(16.0);
+                ui.heading("遅延（ミリ秒）");
+                optional_number_field(ui, &mut profile.inject_delay, "文字注入間隔", "inject_delay");
+                optional_number_field(ui, &mut profile.key_delay, "キー注入間隔", "key_delay");
+                optional_number_field(
+                    ui,
+                    &mut profile.pre_paste_delay,
+                    "貼り付け前",
+                    "pre_paste_delay",
+                );
+                optional_number_field(
+                    ui,
+                    &mut profile.paste_shortcut_event_delay,
+                    "貼り付けキー間隔",
+                    "paste_shortcut_event_delay",
+                );
+                optional_number_field(
+                    ui,
+                    &mut profile.post_form_delay,
+                    "フォーム後",
+                    "post_form_delay",
+                );
+                optional_number_field(
+                    ui,
+                    &mut profile.post_search_delay,
+                    "検索後",
+                    "post_search_delay",
+                );
+
+                ui.add_space(16.0);
+                ui.heading("フォーム上限");
+                optional_number_field(
+                    ui,
+                    &mut profile.max_form_width,
+                    "最大幅（px）",
+                    "max_form_width",
+                );
+                optional_number_field(
+                    ui,
+                    &mut profile.max_form_height,
+                    "最大高（px）",
+                    "max_form_height",
+                );
+
+                if is_default {
+                    ui.add_space(16.0);
+                    ui.heading("検索と全体設定");
+                    optional_text_field(
+                        ui,
+                        &mut profile.search_shortcut,
+                        "検索shortcut",
+                        "例: ALT+SPACE / off",
+                    );
+                    optional_text_field(
+                        ui,
+                        &mut profile.search_trigger,
+                        "検索trigger",
+                        "例: .search / off",
+                    );
+                    optional_text_field(
+                        ui,
+                        &mut profile.toggle_key,
+                        "有効/無効toggle key",
+                        "例: RIGHT_CTRL / OFF",
+                    );
+                    optional_bool_field(
+                        ui,
+                        &mut profile.preserve_clipboard,
+                        "clipboardを復元",
+                        "展開前のclipboard内容を保持",
+                    );
+                    optional_bool_field(
+                        ui,
+                        &mut profile.show_icon,
+                        "status iconを表示",
+                        "macOS menu bar / Windows tray",
+                    );
+                    optional_bool_field(
+                        ui,
+                        &mut profile.show_notifications,
+                        "通知を表示",
+                        "Espansoの通知全体",
+                    );
+                }
+            });
+
+        if profile != original {
+            self.config_files[index].profile = profile;
+            if let Err(error) = self.config_files[index].refresh_raw_from_profile() {
+                self.notify(MessageKind::Error, error.to_string());
+            }
+        }
+    }
+
+    fn profile_raw_editor(&mut self, ui: &mut Ui, index: usize) {
+        let apply_clicked = {
+            let file = &mut self.config_files[index];
+            if file.had_comments {
+                callout(
+                    ui,
+                    theme::AMBER,
+                    "Raw YAML編集ではコメントを保持できます。ビジュアル編集の前にも元ファイルを自動バックアップします。",
+                );
+            }
+            let changed = ui
+                .add(
+                    TextEdit::multiline(&mut file.raw_yaml)
+                        .font(FontId::new(14.0, FontFamily::Monospace))
+                        .desired_rows(30)
+                        .desired_width(f32::INFINITY),
+                )
+                .changed();
+            if changed {
+                file.dirty = true;
+            }
+            ui.button("YAMLを検証して適用").clicked()
+        };
+        if apply_clicked {
+            match self.config_files[index].apply_raw_yaml() {
+                Ok(()) => self.notify(MessageKind::Success, "YAMLは有効です"),
+                Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            }
+        }
+    }
+
     fn globals_view(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(
@@ -1508,6 +1925,7 @@ impl EspansoGuiApp {
 
     fn modal_windows(&mut self, ui: &mut Ui) {
         self.new_file_window(ui);
+        self.new_config_window(ui);
         self.variable_window(ui);
         self.form_field_window(ui);
         self.delete_confirmation(ui);
@@ -1547,6 +1965,42 @@ impl EspansoGuiApp {
         }
         if create {
             self.create_file();
+        }
+    }
+
+    fn new_config_window(&mut self, ui: &mut Ui) {
+        if !self.new_config_dialog {
+            return;
+        }
+        let mut open = true;
+        let mut create = false;
+        egui::Window::new("設定プロファイルを追加")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.label("ファイル名");
+                ui.add(TextEdit::singleline(&mut self.new_config_name).hint_text("telegram"));
+                ui.label(
+                    RichText::new("config/<名前>.yml として作成します。default は全体設定です。")
+                        .small()
+                        .color(theme::MUTED),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("キャンセル").clicked() {
+                        self.new_config_dialog = false;
+                    }
+                    if ui.add(Button::new("作成").fill(theme::ACCENT)).clicked() {
+                        create = true;
+                    }
+                });
+            });
+        if !open {
+            self.new_config_dialog = false;
+        }
+        if create {
+            self.create_config_file();
         }
     }
 
@@ -1891,6 +2345,7 @@ impl eframe::App for EspansoGuiApp {
                 }
                 match self.section {
                     Section::Library => self.library_view(ui),
+                    Section::Profiles => self.profiles_view(ui),
                     Section::Globals => self.globals_view(ui),
                     Section::Diagnostics => self.diagnostics_view(ui),
                     Section::Settings => self.settings_view(ui),
@@ -1953,6 +2408,62 @@ fn two_column_field(ui: &mut Ui, label: &str, description: &str, content: impl F
             ui.label(RichText::new(description).small().color(theme::MUTED));
         });
         ui.vertical(content);
+    });
+}
+
+fn optional_text_field(ui: &mut Ui, value: &mut Option<String>, label: &str, description: &str) {
+    two_column_field(ui, label, description, |ui| {
+        let mut overridden = value.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut overridden, "上書き").changed() {
+                if overridden {
+                    *value = Some(String::new());
+                } else {
+                    *value = None;
+                }
+            }
+            ui.add_enabled_ui(overridden, |ui| {
+                if let Some(value) = value {
+                    ui.add(TextEdit::singleline(value).desired_width(320.0));
+                }
+            });
+        });
+    });
+}
+
+fn optional_number_field(ui: &mut Ui, value: &mut Option<u64>, label: &str, description: &str) {
+    two_column_field(ui, label, description, |ui| {
+        let mut overridden = value.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut overridden, "上書き").changed() {
+                if overridden {
+                    *value = Some(0);
+                } else {
+                    *value = None;
+                }
+            }
+            ui.add_enabled_ui(overridden, |ui| {
+                if let Some(value) = value {
+                    ui.add(egui::DragValue::new(value).range(0..=60_000));
+                }
+            });
+        });
+    });
+}
+
+fn optional_bool_field(ui: &mut Ui, value: &mut Option<bool>, label: &str, description: &str) {
+    two_column_field(ui, label, description, |ui| {
+        ComboBox::from_id_salt(("optional-bool", label))
+            .selected_text(match value {
+                None => "継承",
+                Some(true) => "有効",
+                Some(false) => "無効",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(value, None, "継承");
+                ui.selectable_value(value, Some(true), "有効");
+                ui.selectable_value(value, Some(false), "無効");
+            });
     });
 }
 
