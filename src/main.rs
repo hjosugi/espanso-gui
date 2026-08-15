@@ -1,6 +1,7 @@
 mod app;
 mod conflict;
 mod espanso;
+mod i18n;
 mod lossless_yaml;
 mod model;
 mod storage;

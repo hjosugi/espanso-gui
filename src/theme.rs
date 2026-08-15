@@ -108,3 +108,42 @@ fn install_system_font(ctx: &egui::Context) {
         .push("system-ui".into());
     ctx.set_fonts(fonts);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relative_luminance(color: Color32) -> f32 {
+        fn channel(value: u8) -> f32 {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+    }
+
+    fn contrast_ratio(left: Color32, right: Color32) -> f32 {
+        let (lighter, darker) = {
+            let left = relative_luminance(left);
+            let right = relative_luminance(right);
+            if left >= right {
+                (left, right)
+            } else {
+                (right, left)
+            }
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn text_palette_meets_wcag_aa_contrast_on_primary_surfaces() {
+        for foreground in [INK, MUTED, ACCENT, DANGER] {
+            assert!(contrast_ratio(foreground, PAPER) >= 4.5);
+            assert!(contrast_ratio(foreground, PANEL) >= 4.5);
+        }
+        assert!(contrast_ratio(Color32::WHITE, ACCENT) >= 4.5);
+    }
+}

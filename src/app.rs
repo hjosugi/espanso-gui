@@ -1,5 +1,6 @@
 use crate::conflict::ResolutionChoice;
 use crate::espanso::{self, EspansoAction, EspansoStatus};
+use crate::i18n::{self, Language, TextKey};
 use crate::model::{ContentKind, DiagnosticLevel, FormField, Snippet, Variable};
 use crate::storage::{self, ConfigFile, ExternalConflict, WorkspaceFile};
 use crate::theme;
@@ -34,12 +35,22 @@ enum EditorTab {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Preferences {
     config_root: PathBuf,
+    #[serde(default)]
+    language: Language,
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             config_root: espanso::default_config_root(),
+            language: Language::default(),
+            ui_scale: default_ui_scale(),
         }
     }
 }
@@ -134,6 +145,7 @@ pub struct EspansoGuiApp {
     new_config_name: String,
     profile_raw_yaml: bool,
     html_source_mode: bool,
+    focus_search: bool,
     variable_editor: Option<VariableEditor>,
     form_field_editor: Option<FormFieldEditor>,
     pending_delete: Option<PendingDelete>,
@@ -153,10 +165,15 @@ impl EspansoGuiApp {
             .and_then(|storage| eframe::get_value(storage, APP_STORAGE_KEY))
             .unwrap_or_else(|| Preferences {
                 config_root: status.config_root.clone(),
+                ..Preferences::default()
             });
         if preferences.config_root.as_os_str().is_empty() {
             preferences.config_root.clone_from(&status.config_root);
         }
+        preferences.ui_scale = preferences.ui_scale.clamp(0.8, 2.0);
+        creation_context
+            .egui_ctx
+            .set_zoom_factor(preferences.ui_scale);
         let (files, config_files, load_error) = if preferences.config_root.join("match").is_dir() {
             let matches = storage::load_workspace(&preferences.config_root);
             let profiles = storage::load_config_profiles(&preferences.config_root);
@@ -193,6 +210,7 @@ impl EspansoGuiApp {
             new_config_name: "application".into(),
             profile_raw_yaml: false,
             html_source_mode: false,
+            focus_search: false,
             variable_editor: None,
             form_field_editor: None,
             pending_delete: None,
@@ -559,13 +577,51 @@ impl EspansoGuiApp {
     }
 
     fn keyboard_shortcuts(&mut self, ui: &Ui) {
-        let save = ui.input(|input| input.modifiers.command && input.key_pressed(Key::S));
-        let new = ui.input(|input| input.modifiers.command && input.key_pressed(Key::N));
+        let (save, new, search, destination, escape) = ui.input(|input| {
+            let command = input.modifiers.command;
+            let destination = if command && input.key_pressed(Key::Num1) {
+                Some(Section::Library)
+            } else if command && input.key_pressed(Key::Num2) {
+                Some(Section::Profiles)
+            } else if command && input.key_pressed(Key::Num3) {
+                Some(Section::Globals)
+            } else if command && input.key_pressed(Key::Num4) {
+                Some(Section::Diagnostics)
+            } else if command && input.key_pressed(Key::Num5) {
+                Some(Section::Settings)
+            } else {
+                None
+            };
+            (
+                command && input.key_pressed(Key::S),
+                command && input.key_pressed(Key::N),
+                command && input.key_pressed(Key::F),
+                destination,
+                input.key_pressed(Key::Escape),
+            )
+        });
         if save {
             self.save_current();
         }
         if new && self.section == Section::Library {
             self.add_snippet();
+        }
+        if search {
+            self.section = Section::Library;
+            self.focus_search = true;
+        }
+        if let Some(destination) = destination {
+            self.section = destination;
+        }
+        if escape {
+            self.new_file_dialog = false;
+            self.new_config_dialog = false;
+            self.variable_editor = None;
+            self.form_field_editor = None;
+            self.pending_delete = None;
+            self.conflict_dialog = None;
+            self.pending_restore = None;
+            self.confirm_close = false;
         }
     }
 
@@ -587,27 +643,50 @@ impl EspansoGuiApp {
                     ui.label(RichText::new("E/").size(23.0).strong().color(theme::ACCENT));
                     ui.label(RichText::new("Espanso GUI").size(18.0).strong());
                     ui.add_space(10.0);
-                    status_badge(ui, &self.status);
+                    status_badge(ui, &self.status, self.preferences.language);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add_enabled(
                                 can_save,
-                                Button::new(RichText::new("保存  ⌘S").strong())
-                                    .fill(theme::ACCENT)
-                                    .stroke(Stroke::NONE),
+                                Button::new(
+                                    RichText::new(format!(
+                                        "{}  ⌘S",
+                                        i18n::text(self.preferences.language, TextKey::Save)
+                                    ))
+                                    .strong(),
+                                )
+                                .fill(theme::ACCENT)
+                                .stroke(Stroke::NONE),
                             )
                             .clicked()
                         {
                             self.save_current();
                         }
-                        if ui.button("再読み込み").clicked() {
+                        if ui
+                            .button(i18n::text(self.preferences.language, TextKey::Reload))
+                            .clicked()
+                        {
                             self.reload_workspace();
                         }
-                        if self.status.installed && ui.button("Espanso再起動").clicked() {
+                        if self.status.installed
+                            && ui
+                                .button(i18n::text(
+                                    self.preferences.language,
+                                    TextKey::RestartEspanso,
+                                ))
+                                .clicked()
+                        {
                             self.run_espanso_action(EspansoAction::Restart);
                         }
                         if self.has_dirty_files() {
-                            ui.label(RichText::new("未保存").color(theme::AMBER).strong());
+                            ui.label(
+                                RichText::new(i18n::text(
+                                    self.preferences.language,
+                                    TextKey::Unsaved,
+                                ))
+                                .color(theme::AMBER)
+                                .strong(),
+                            );
                         }
                     });
                 });
@@ -625,24 +704,41 @@ impl EspansoGuiApp {
             )
             .show(ui, |ui| {
                 ui.add_space(4.0);
-                ui.label(RichText::new("ワークスペース").small().color(theme::MUTED));
+                let language = self.preferences.language;
+                ui.label(
+                    RichText::new(i18n::text(language, TextKey::Workspace))
+                        .small()
+                        .color(theme::MUTED),
+                );
                 ui.add_space(4.0);
-                nav_button(ui, &mut self.section, Section::Library, "スニペット", "⌘1");
+                nav_button(
+                    ui,
+                    &mut self.section,
+                    Section::Library,
+                    i18n::text(language, TextKey::Snippets),
+                    "⌘1",
+                );
                 nav_button(
                     ui,
                     &mut self.section,
                     Section::Profiles,
-                    "アプリ別設定",
+                    i18n::text(language, TextKey::Profiles),
                     "⌘2",
                 );
                 nav_button(
                     ui,
                     &mut self.section,
                     Section::Globals,
-                    "グローバル変数",
+                    i18n::text(language, TextKey::Globals),
                     "⌘3",
                 );
-                nav_button(ui, &mut self.section, Section::Diagnostics, "診断", "⌘4");
+                nav_button(
+                    ui,
+                    &mut self.section,
+                    Section::Diagnostics,
+                    i18n::text(language, TextKey::Diagnostics),
+                    "⌘4",
+                );
                 ui.add_space(16.0);
                 ui.label(RichText::new("Espanso").small().color(theme::MUTED));
                 ui.add_space(4.0);
@@ -673,7 +769,10 @@ impl EspansoGuiApp {
 
                 ui.add_space(6.0);
                 if ui
-                    .add_sized([190.0, 34.0], Button::new("＋ ファイルを追加"))
+                    .add_sized(
+                        [190.0, 34.0],
+                        Button::new(i18n::text(language, TextKey::AddFile)),
+                    )
                     .clicked()
                 {
                     self.new_file_dialog = true;
@@ -683,15 +782,15 @@ impl EspansoGuiApp {
                         ui,
                         &mut self.section,
                         Section::About,
-                        "このアプリについて",
+                        i18n::text(language, TextKey::About),
                         "",
                     );
                     nav_button(
                         ui,
                         &mut self.section,
                         Section::Settings,
-                        "設定とバックアップ",
-                        "",
+                        i18n::text(language, TextKey::Settings),
+                        "⌘5",
                     );
                     ui.label(
                         RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
@@ -730,18 +829,30 @@ impl EspansoGuiApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("スニペット");
+                    let language = self.preferences.language;
+                    ui.heading(i18n::text(language, TextKey::Snippets));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("＋ 新規").clicked() {
+                        if ui
+                            .button(i18n::text(language, TextKey::NewSnippet))
+                            .clicked()
+                        {
                             self.add_snippet();
                         }
                     });
                 });
-                ui.add(
-                    TextEdit::singleline(&mut self.search)
-                        .hint_text("検索: トリガー、内容、ラベル")
-                        .desired_width(f32::INFINITY),
-                );
+                let search_label = ui.label(i18n::text(self.preferences.language, TextKey::Search));
+                let search_response = ui
+                    .add(
+                        TextEdit::singleline(&mut self.search)
+                            .id_salt("snippet-search")
+                            .hint_text(i18n::text(self.preferences.language, TextKey::SearchHint))
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(search_label.id);
+                if self.focus_search {
+                    search_response.request_focus();
+                    self.focus_search = false;
+                }
                 ui.add_space(4.0);
 
                 let search = self.search.to_lowercase();
@@ -1851,7 +1962,56 @@ impl EspansoGuiApp {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::PAPER).inner_margin(Margin::same(24)))
             .show(ui, |ui| {
-                ui.heading("設定とバックアップ");
+                let language = self.preferences.language;
+                ui.heading(i18n::text(language, TextKey::Settings));
+                ui.separator();
+                ui.heading(i18n::text(language, TextKey::Accessibility));
+                two_column_field(
+                    ui,
+                    i18n::text(language, TextKey::Language),
+                    "日本語 / English",
+                    |ui| {
+                        ComboBox::from_id_salt("ui-language")
+                            .selected_text(self.preferences.language.native_name())
+                            .show_ui(ui, |ui| {
+                                for candidate in Language::ALL {
+                                    ui.selectable_value(
+                                        &mut self.preferences.language,
+                                        candidate,
+                                        candidate.native_name(),
+                                    );
+                                }
+                            });
+                    },
+                );
+                two_column_field(
+                    ui,
+                    i18n::text(self.preferences.language, TextKey::UiScale),
+                    "80%–200%",
+                    |ui| {
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.preferences.ui_scale, 0.8..=2.0)
+                                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                            )
+                            .changed()
+                        {
+                            ui.ctx().set_zoom_factor(self.preferences.ui_scale);
+                        }
+                    },
+                );
+                ui.label(
+                    RichText::new(i18n::text(
+                        self.preferences.language,
+                        TextKey::KeyboardShortcuts,
+                    ))
+                    .strong(),
+                );
+                callout(
+                    ui,
+                    theme::ACCENT,
+                    i18n::text(self.preferences.language, TextKey::ShortcutHelp),
+                );
                 ui.separator();
                 ui.heading("Espanso設定フォルダ");
                 ui.horizontal(|ui| {
@@ -2700,11 +2860,11 @@ impl eframe::App for EspansoGuiApp {
     }
 }
 
-fn status_badge(ui: &mut Ui, status: &EspansoStatus) {
+fn status_badge(ui: &mut Ui, status: &EspansoStatus, language: Language) {
     let (text, color) = if status.installed {
-        ("Espanso 接続済み", theme::ACCENT)
+        (i18n::text(language, TextKey::Connected), theme::ACCENT)
     } else {
-        ("Espanso 未検出", theme::AMBER)
+        (i18n::text(language, TextKey::NotDetected), theme::AMBER)
     };
     Frame::new()
         .fill(color.gamma_multiply(0.12))
