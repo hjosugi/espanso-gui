@@ -75,7 +75,12 @@ publish_repository() {
     gh repo create "$REPOSITORY" --public --source . --description "A polished cross-platform visual editor for Espanso, written in Rust"
   fi
   ensure_exact_origin
-  gh repo edit "$REPOSITORY" --visibility public --enable-issues --enable-wiki=false --enable-projects=false
+  gh repo edit "$REPOSITORY" \
+    --visibility public \
+    --accept-visibility-change-consequences \
+    --enable-issues \
+    --enable-wiki=false \
+    --enable-projects=false
   git push --set-upstream origin main
   create_labels
   create_issues
