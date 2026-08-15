@@ -59,6 +59,7 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -70,4 +71,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS --title "Espanso GUI ${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        shell: bash
+        run: |
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "${notes_file}" ]]; then
+            gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
+              --title "Espanso GUI ${GITHUB_REF_NAME}" \
+              --notes-file "${notes_file}" \
+              --verify-tag
+          else
+            gh release create "${GITHUB_REF_NAME}" release-assets/* SHA256SUMS \
+              --title "Espanso GUI ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
+          fi

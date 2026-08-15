@@ -1,4 +1,5 @@
 use directories::BaseDirs;
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -14,6 +15,29 @@ pub struct EspansoStatus {
 pub struct ActionResult {
     pub success: bool,
     pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EspansoAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl EspansoAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
+    }
+}
+
+impl fmt::Display for EspansoAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 pub fn detect() -> EspansoStatus {
@@ -42,12 +66,8 @@ pub fn detect() -> EspansoStatus {
     }
 }
 
-pub fn action(action: &str) -> anyhow::Result<ActionResult> {
-    anyhow::ensure!(
-        matches!(action, "start" | "stop" | "restart" | "status"),
-        "許可されていないEspanso操作です"
-    );
-    let output = Command::new("espanso").arg(action).output()?;
+pub fn action(action: EspansoAction) -> anyhow::Result<ActionResult> {
+    let output = Command::new("espanso").arg(action.as_str()).output()?;
     Ok(ActionResult {
         success: output.status.success(),
         output: non_empty_output(&output.stdout, &output.stderr).unwrap_or_default(),
@@ -94,9 +114,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_known_actions_are_accepted() {
-        let result = action("anything-else");
-        assert!(result.is_err());
+    fn actions_map_to_expected_cli_arguments() {
+        assert_eq!(EspansoAction::Start.as_str(), "start");
+        assert_eq!(EspansoAction::Stop.as_str(), "stop");
+        assert_eq!(EspansoAction::Restart.as_str(), "restart");
     }
 
     #[test]

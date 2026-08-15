@@ -1,4 +1,4 @@
-use crate::espanso::{self, EspansoStatus};
+use crate::espanso::{self, EspansoAction, EspansoStatus};
 use crate::model::{ContentKind, DiagnosticLevel, FormField, Snippet, Variable};
 use crate::storage::{self, WorkspaceFile};
 use crate::theme;
@@ -396,7 +396,7 @@ impl EspansoGuiApp {
         }
     }
 
-    fn run_espanso_action(&mut self, action: &str) {
+    fn run_espanso_action(&mut self, action: EspansoAction) {
         match espanso::action(action) {
             Ok(result) if result.success => {
                 self.notify(
@@ -455,7 +455,7 @@ impl EspansoGuiApp {
                             self.reload_workspace();
                         }
                         if self.status.installed && ui.button("Espanso再起動").clicked() {
-                            self.run_espanso_action("restart");
+                            self.run_espanso_action(EspansoAction::Restart);
                         }
                         if self.has_dirty_files() {
                             ui.label(RichText::new("未保存").color(theme::AMBER).strong());
@@ -1369,19 +1369,19 @@ impl EspansoGuiApp {
                         .add_enabled(self.status.installed, Button::new("開始"))
                         .clicked()
                     {
-                        self.run_espanso_action("start");
+                        self.run_espanso_action(EspansoAction::Start);
                     }
                     if ui
                         .add_enabled(self.status.installed, Button::new("停止"))
                         .clicked()
                     {
-                        self.run_espanso_action("stop");
+                        self.run_espanso_action(EspansoAction::Stop);
                     }
                     if ui
                         .add_enabled(self.status.installed, Button::new("再起動"))
                         .clicked()
                     {
-                        self.run_espanso_action("restart");
+                        self.run_espanso_action(EspansoAction::Restart);
                     }
                     if ui.button("状態を更新").clicked() {
                         self.status = espanso::detect();
