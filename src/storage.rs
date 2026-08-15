@@ -1,3 +1,4 @@
+use crate::lossless_yaml;
 use crate::model::{MatchFile, Snippet};
 use atomic_write_file::AtomicWriteFile;
 use chrono::Utc;
@@ -44,7 +45,12 @@ impl WorkspaceFile {
     }
 
     pub fn refresh_raw_from_document(&mut self) -> StorageResult<()> {
-        self.raw_yaml = self.document.to_yaml()?;
+        self.raw_yaml = match MatchFile::from_yaml(&self.raw_yaml) {
+            Ok(previous) => {
+                lossless_yaml::patch_match_file(&self.raw_yaml, &previous, &self.document)?
+            }
+            Err(_) => self.document.to_yaml()?,
+        };
         self.dirty = true;
         Ok(())
     }

@@ -1,5 +1,6 @@
 mod app;
 mod espanso;
+mod lossless_yaml;
 mod model;
 mod storage;
 mod theme;
