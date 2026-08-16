@@ -103,13 +103,14 @@ fn issue_spec_front_matter_remains_valid() {
     for directory in [root.join("docs/issues"), root.join("docs/ja/issues")] {
         for path in markdown_files(&directory) {
             let text = fs::read_to_string(&path).unwrap();
+            let normalized = text.replace("\r\n", "\n");
             assert!(
-                text.starts_with("---\ntitle:"),
+                normalized.starts_with("---\ntitle:"),
                 "broken issue front matter in {}",
                 path.display()
             );
             assert!(
-                text.contains("\nlabels:") && text.contains("\n---\n"),
+                normalized.contains("\nlabels:") && normalized.contains("\n---\n"),
                 "incomplete issue front matter in {}",
                 path.display()
             );
