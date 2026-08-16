@@ -264,27 +264,39 @@ fn wide_navigation(
                     action = Some(NavigationAction::AddFile);
                 }
             }
-            let footer_spacer = (ui.available_height() - theme::NAVIGATION_FOOTER_HEIGHT).max(0.0);
-            ui.add_space(footer_spacer);
-            ui.spacing_mut().item_spacing.y = f32::from(theme::PADDING_COMPACT);
-            ui.label(
-                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                    .small()
-                    .color(theme::palette(ui).muted),
+            let available = ui.available_rect_before_wrap();
+            let footer_top =
+                (available.bottom() - theme::NAVIGATION_FOOTER_HEIGHT).max(available.top());
+            let footer_rect = egui::Rect::from_min_max(
+                egui::pos2(available.left(), footer_top),
+                available.right_bottom(),
             );
-            nav_button(
-                ui,
-                section,
-                Section::Settings,
-                i18n::text(language, TextKey::SettingsNav),
-                &command_shortcut("5"),
-            );
-            nav_button(
-                ui,
-                section,
-                Section::About,
-                i18n::text(language, TextKey::About),
-                "",
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id_salt("navigation-footer")
+                    .max_rect(footer_rect),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = f32::from(theme::PADDING_COMPACT);
+                    ui.label(
+                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                    nav_button(
+                        ui,
+                        section,
+                        Section::Settings,
+                        i18n::text(language, TextKey::SettingsNav),
+                        &command_shortcut("5"),
+                    );
+                    nav_button(
+                        ui,
+                        section,
+                        Section::About,
+                        i18n::text(language, TextKey::About),
+                        "",
+                    );
+                },
             );
         });
     action
