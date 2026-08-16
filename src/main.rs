@@ -1,11 +1,23 @@
 mod app;
 mod conflict;
 mod espanso;
+mod html_editor;
 mod i18n;
 mod lossless_yaml;
 mod model;
+mod navigation;
+mod preferences;
+mod profile_editor;
+mod settings_editor;
+mod snippet_editor;
+mod snippet_library;
 mod storage;
 mod theme;
+mod top_bar;
+mod ui_components;
+mod variable_editor;
+mod yaml_editor;
+mod yaml_syntax;
 
 use app::EspansoGuiApp;
 use eframe::egui;
@@ -17,8 +29,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Espanso GUI")
             .with_icon(icon)
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([1040.0, 680.0]),
+            .with_inner_size(theme::DEFAULT_WINDOW_SIZE)
+            .with_min_inner_size(theme::MINIMUM_WINDOW_SIZE),
         ..Default::default()
     };
     eframe::run_native(

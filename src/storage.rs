@@ -1,4 +1,5 @@
 use crate::lossless_yaml;
+use crate::yaml_syntax;
 use crate::{
     conflict::{MergePlan, ResolutionChoice},
     model::{ConfigProfile, MatchFile, Snippet},
@@ -17,14 +18,67 @@ const MAX_CONFIG_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
-    #[error("{0}")]
-    Message(String),
-    #[error("ファイル操作に失敗しました: {0}")]
+    #[error("file operation failed: {0}")]
     Io(#[from] std::io::Error),
-    #[error("YAMLが正しくありません: {0}")]
+    #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
-    #[error("CSVを処理できません: {0}")]
+    #[error("CSV processing failed: {0}")]
     Csv(#[from] csv::Error),
+    #[error("invalid YAML in {}: {source}", path.display())]
+    InvalidYamlFile {
+        path: PathBuf,
+        source: serde_yaml_ng::Error,
+    },
+    #[error("{0}")]
+    Issue(#[from] StorageIssue),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageIssue {
+    #[error("could not resolve the configuration file path")]
+    ConfigPathResolution,
+    #[error("{} already exists", .0.display())]
+    AlreadyExists(PathBuf),
+    #[error("the file was changed by another application")]
+    ExternalChange,
+    #[error("the save destination was deleted")]
+    DestinationDeleted,
+    #[error("the file to delete was not found")]
+    DeleteTargetMissing,
+    #[error("the target file is unavailable")]
+    MissingTargetFile,
+    #[error("only application backups can be restored")]
+    RestoreOutsideBackup,
+    #[error("the configuration file to restore is too large")]
+    RestoreTooLarge,
+    #[error("the backup is not UTF-8")]
+    BackupNotUtf8,
+    #[error("the file changed again after conflict review")]
+    ConflictChangedAgain,
+    #[error("could not resolve the backup path")]
+    BackupPathResolution,
+    #[error("the backup destination must be outside the Espanso configuration folder")]
+    BackupInsideConfig,
+    #[error("the file name contains unsupported characters")]
+    InvalidFileName,
+    #[error("a relative path is required")]
+    RelativePathRequired,
+    #[error("paths outside the configuration folder are not allowed")]
+    OutsideConfigPath,
+    #[error("snippets must be stored under match")]
+    MatchRootRequired,
+    #[error("configuration profiles must be stored under config")]
+    ConfigRootRequired,
+    #[error("only files under match or config can be managed")]
+    ManagedRootRequired,
+    #[error("the extension must be .yml or .yaml")]
+    YamlExtensionRequired,
+    #[error("files cannot be saved outside the configuration folder")]
+    OutsideSaveRoot,
+    #[error("Espanso configuration folder not found: {}", .0.display())]
+    ConfigRootMissing(PathBuf),
+    #[error("could not create a unique backup-history destination")]
+    UniqueBackupDestination,
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -155,11 +209,14 @@ pub fn load_workspace(root: &Path) -> StorageResult<Vec<WorkspaceFile>> {
             continue;
         }
         let raw_yaml = fs::read_to_string(&canonical)?;
-        let document = MatchFile::from_yaml(&raw_yaml)
-            .map_err(|error| StorageError::Message(format!("{}: {error}", canonical.display())))?;
+        let document =
+            MatchFile::from_yaml(&raw_yaml).map_err(|source| StorageError::InvalidYamlFile {
+                path: canonical.clone(),
+                source,
+            })?;
         let relative_path = canonical
             .strip_prefix(&root)
-            .map_err(|_| StorageError::Message("設定ファイルのパスを解決できません".into()))?
+            .map_err(|_| StorageIssue::ConfigPathResolution)?
             .to_path_buf();
         let normalized = relative_path.to_string_lossy().replace('\\', "/");
         files.push(WorkspaceFile {
@@ -213,11 +270,15 @@ pub fn load_config_profiles(root: &Path) -> StorageResult<Vec<ConfigFile>> {
             continue;
         }
         let raw_yaml = fs::read_to_string(&canonical)?;
-        let profile = ConfigProfile::from_yaml(&raw_yaml)
-            .map_err(|error| StorageError::Message(format!("{}: {error}", canonical.display())))?;
+        let profile = ConfigProfile::from_yaml(&raw_yaml).map_err(|source| {
+            StorageError::InvalidYamlFile {
+                path: canonical.clone(),
+                source,
+            }
+        })?;
         let relative_path = canonical
             .strip_prefix(&root)
-            .map_err(|_| StorageError::Message("設定ファイルのパスを解決できません".into()))?
+            .map_err(|_| StorageIssue::ConfigPathResolution)?
             .to_path_buf();
         files.push(ConfigFile {
             display_name: canonical
@@ -250,10 +311,7 @@ pub fn create_match_file(root: &Path, name: &str) -> StorageResult<WorkspaceFile
     let root = canonical_root(root)?;
     let target = checked_target(&root, &relative)?;
     if target.exists() {
-        return Err(StorageError::Message(format!(
-            "{} はすでに存在します",
-            target.display()
-        )));
+        return Err(StorageIssue::AlreadyExists(target).into());
     }
     let document = MatchFile::default();
     let raw_yaml = document.to_yaml()?;
@@ -278,10 +336,7 @@ pub fn create_config_file(root: &Path, name: &str) -> StorageResult<ConfigFile> 
     let root = canonical_root(root)?;
     let target = checked_config_target(&root, &relative)?;
     if target.exists() {
-        return Err(StorageError::Message(format!(
-            "{} はすでに存在します",
-            target.display()
-        )));
+        return Err(StorageIssue::AlreadyExists(target).into());
     }
     let profile = ConfigProfile::default();
     let raw_yaml = profile.to_yaml()?;
@@ -309,14 +364,10 @@ pub fn save_workspace_file(root: &Path, file: &mut WorkspaceFile) -> StorageResu
         let current = fs::read(&target)?;
         let current_hash = hash(&current);
         if current_hash != file.saved_hash {
-            return Err(StorageError::Message(
-                "ファイルが他のアプリで変更されました。再読み込みしてから保存してください".into(),
-            ));
+            return Err(StorageIssue::ExternalChange.into());
         }
     } else if !file.saved_hash.is_empty() {
-        return Err(StorageError::Message(
-            "保存先が削除されています。再読み込みしてください".into(),
-        ));
+        return Err(StorageIssue::DestinationDeleted.into());
     }
 
     let backup_path = backup_file(&root, &relative, &target)?;
@@ -342,14 +393,10 @@ pub fn save_config_file(root: &Path, file: &mut ConfigFile) -> StorageResult<Sav
         let current = fs::read(&target)?;
         let current_hash = hash(&current);
         if current_hash != file.saved_hash {
-            return Err(StorageError::Message(
-                "ファイルが他のアプリで変更されました。再読み込みしてから保存してください".into(),
-            ));
+            return Err(StorageIssue::ExternalChange.into());
         }
     } else if !file.saved_hash.is_empty() {
-        return Err(StorageError::Message(
-            "保存先が削除されています。再読み込みしてください".into(),
-        ));
+        return Err(StorageIssue::DestinationDeleted.into());
     }
 
     let backup_path = backup_file(&root, &relative, &target)?;
@@ -371,9 +418,7 @@ pub fn move_to_recoverable_trash(root: &Path, relative_path: &Path) -> StorageRe
     let relative = validate_relative_path(relative_path)?;
     let target = checked_target(&root, &relative)?;
     if !target.is_file() {
-        return Err(StorageError::Message(
-            "削除するファイルが見つかりません".into(),
-        ));
+        return Err(StorageIssue::DeleteTargetMissing.into());
     }
     let destination = root
         .join(".espanso-gui/trash")
@@ -507,26 +552,20 @@ pub fn restore_history(
     let backup_root = root.join(".espanso-gui/backups");
     let history = history_path.canonicalize()?;
     if !history.starts_with(&backup_root) || !history.is_file() {
-        return Err(StorageError::Message(
-            "アプリのバックアップ以外からは復元できません".into(),
-        ));
+        return Err(StorageIssue::RestoreOutsideBackup.into());
     }
     let target = checked_validated_target(&root, &relative)?;
     let restored = fs::read(&history)?;
     if restored.len() as u64 > MAX_CONFIG_FILE_BYTES {
-        return Err(StorageError::Message(
-            "復元する設定ファイルが大きすぎます".into(),
-        ));
+        return Err(StorageIssue::RestoreTooLarge.into());
     }
     if relative.starts_with("match") {
         MatchFile::from_yaml(
-            std::str::from_utf8(&restored)
-                .map_err(|_| StorageError::Message("バックアップがUTF-8ではありません".into()))?,
+            std::str::from_utf8(&restored).map_err(|_| StorageIssue::BackupNotUtf8)?,
         )?;
     } else {
         ConfigProfile::from_yaml(
-            std::str::from_utf8(&restored)
-                .map_err(|_| StorageError::Message("バックアップがUTF-8ではありません".into()))?,
+            std::str::from_utf8(&restored).map_err(|_| StorageIssue::BackupNotUtf8)?,
         )?;
     }
     let backup_path = backup_file(&root, &relative, &target)?;
@@ -548,9 +587,7 @@ fn analyze_external_conflict(
     let relative = validate_any_relative_path(relative_path)?;
     let target = checked_validated_target(&root, &relative)?;
     if !target.is_file() {
-        return Err(StorageError::Message(
-            "保存先が削除されています。再読み込みしてください".into(),
-        ));
+        return Err(StorageIssue::DestinationDeleted.into());
     }
     let remote_yaml = fs::read_to_string(target)?;
     let remote_hash = hash(remote_yaml.as_bytes());
@@ -578,9 +615,7 @@ fn save_resolved_content(
     let target = checked_validated_target(&root, &relative)?;
     let current = fs::read(&target)?;
     if hash(&current) != expected_remote_hash {
-        return Err(StorageError::Message(
-            "競合確認後にファイルが再度変更されました。もう一度比較してください".into(),
-        ));
+        return Err(StorageIssue::ConflictChangedAgain.into());
     }
     let backup_path = backup_file(&root, &relative, &target)?;
     atomic_write(&target, content.as_bytes())?;
@@ -593,7 +628,21 @@ fn save_resolved_content(
 pub fn create_backup_snapshot(root: &Path, destination_root: &Path) -> StorageResult<PathBuf> {
     let root = canonical_root(root)?;
     fs::create_dir_all(destination_root)?;
-    let destination = destination_root.join(format!("espanso-backup-{}", timestamp()));
+    let destination_root = destination_root.canonicalize()?;
+    if destination_root.starts_with(&root) {
+        return Err(StorageIssue::BackupInsideConfig.into());
+    }
+    let stamp = timestamp();
+    let mut destination = destination_root.join(format!("espanso-backup-{stamp}"));
+    for sequence in 1..=1000 {
+        if !destination.exists() {
+            break;
+        }
+        destination = destination_root.join(format!("espanso-backup-{stamp}-{sequence:03}"));
+    }
+    if destination.exists() {
+        return Err(StorageIssue::UniqueBackupDestination.into());
+    }
     for entry in WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
@@ -603,7 +652,7 @@ pub fn create_backup_snapshot(root: &Path, destination_root: &Path) -> StorageRe
         let source = entry.path();
         let relative = source
             .strip_prefix(&root)
-            .map_err(|_| StorageError::Message("バックアップパスを解決できません".into()))?;
+            .map_err(|_| StorageIssue::BackupPathResolution)?;
         if relative.starts_with(".espanso-gui") {
             continue;
         }
@@ -665,48 +714,36 @@ fn normalize_file_name(name: &str) -> StorageResult<String> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
     {
-        return Err(StorageError::Message(
-            "ファイル名には英数字、ハイフン、アンダースコアを使用してください".into(),
-        ));
+        return Err(StorageIssue::InvalidFileName.into());
     }
     Ok(value.into())
 }
 
 fn validate_relative_path(path: &Path) -> StorageResult<PathBuf> {
     if path.as_os_str().is_empty() || path.is_absolute() {
-        return Err(StorageError::Message("相対パスを指定してください".into()));
+        return Err(StorageIssue::RelativePathRequired.into());
     }
     if path
         .components()
         .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
     {
-        return Err(StorageError::Message(
-            "設定フォルダ外のパスは使用できません".into(),
-        ));
+        return Err(StorageIssue::OutsideConfigPath.into());
     }
     let mut components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
     });
     if components.next() != Some(OsStr::new("match")) {
-        return Err(StorageError::Message(
-            "スニペットはmatchフォルダ内に保存してください".into(),
-        ));
+        return Err(StorageIssue::MatchRootRequired.into());
     }
     if !is_yaml(path) {
-        return Err(StorageError::Message(
-            "拡張子は.ymlまたは.yamlにしてください".into(),
-        ));
+        return Err(StorageIssue::YamlExtensionRequired.into());
     }
     Ok(path.to_path_buf())
 }
 
 fn validate_config_relative_path(path: &Path) -> StorageResult<PathBuf> {
-    validate_relative_yaml_path(
-        path,
-        "config",
-        "設定プロファイルはconfigフォルダ内に保存してください",
-    )
+    validate_relative_yaml_path(path, "config")
 }
 
 fn validate_any_relative_path(path: &Path) -> StorageResult<PathBuf> {
@@ -717,39 +754,29 @@ fn validate_any_relative_path(path: &Path) -> StorageResult<PathBuf> {
         Some(Component::Normal(value)) if value == OsStr::new("config") => {
             validate_config_relative_path(path)
         }
-        _ => Err(StorageError::Message(
-            "matchまたはconfigフォルダ内の設定だけを操作できます".into(),
-        )),
+        _ => Err(StorageIssue::ManagedRootRequired.into()),
     }
 }
 
-fn validate_relative_yaml_path(
-    path: &Path,
-    required_root: &str,
-    wrong_root_message: &str,
-) -> StorageResult<PathBuf> {
+fn validate_relative_yaml_path(path: &Path, required_root: &str) -> StorageResult<PathBuf> {
     if path.as_os_str().is_empty() || path.is_absolute() {
-        return Err(StorageError::Message("相対パスを指定してください".into()));
+        return Err(StorageIssue::RelativePathRequired.into());
     }
     if path
         .components()
         .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
     {
-        return Err(StorageError::Message(
-            "設定フォルダ外のパスは使用できません".into(),
-        ));
+        return Err(StorageIssue::OutsideConfigPath.into());
     }
     let mut components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
     });
     if components.next() != Some(OsStr::new(required_root)) {
-        return Err(StorageError::Message(wrong_root_message.into()));
+        return Err(StorageIssue::ConfigRootRequired.into());
     }
     if !is_yaml(path) {
-        return Err(StorageError::Message(
-            "拡張子は.ymlまたは.yamlにしてください".into(),
-        ));
+        return Err(StorageIssue::YamlExtensionRequired.into());
     }
     Ok(path.to_path_buf())
 }
@@ -761,9 +788,7 @@ fn checked_target(root: &Path, relative: &Path) -> StorageResult<PathBuf> {
         fs::create_dir_all(parent)?;
         let parent = parent.canonicalize()?;
         if !parent.starts_with(root) {
-            return Err(StorageError::Message(
-                "設定フォルダ外には保存できません".into(),
-            ));
+            return Err(StorageIssue::OutsideSaveRoot.into());
         }
     }
     Ok(target)
@@ -780,9 +805,7 @@ fn checked_validated_target(root: &Path, relative: &Path) -> StorageResult<PathB
         fs::create_dir_all(parent)?;
         let parent = parent.canonicalize()?;
         if !parent.starts_with(root) {
-            return Err(StorageError::Message(
-                "設定フォルダ外には保存できません".into(),
-            ));
+            return Err(StorageIssue::OutsideSaveRoot.into());
         }
     }
     Ok(target)
@@ -790,10 +813,7 @@ fn checked_validated_target(root: &Path, relative: &Path) -> StorageResult<PathB
 
 fn canonical_root(root: &Path) -> StorageResult<PathBuf> {
     if !root.exists() {
-        return Err(StorageError::Message(format!(
-            "Espanso設定フォルダが見つかりません: {}",
-            root.display()
-        )));
+        return Err(StorageIssue::ConfigRootMissing(root.to_path_buf()).into());
     }
     Ok(root.canonicalize()?)
 }
@@ -814,9 +834,7 @@ fn backup_file(root: &Path, relative: &Path, source: &Path) -> StorageResult<Opt
             .join(relative);
     }
     if destination.exists() {
-        return Err(StorageError::Message(
-            "backup履歴の一意な保存先を作成できません".into(),
-        ));
+        return Err(StorageIssue::UniqueBackupDestination.into());
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -865,10 +883,9 @@ fn timestamp() -> String {
 }
 
 fn contains_yaml_comments(content: &str) -> bool {
-    content.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with('#') || line.contains(" #")
-    })
+    content
+        .lines()
+        .any(|line| yaml_syntax::comment_start(line).is_some())
 }
 
 #[cfg(test)]
@@ -882,6 +899,19 @@ mod tests {
             hash(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn comment_detection_ignores_hashes_inside_quoted_values() {
+        assert!(!contains_yaml_comments(
+            "trigger: \"#find\"\nreplace: 'value # literal'\n"
+        ));
+        assert!(contains_yaml_comments(
+            "trigger: \"#find\" # actual comment\n"
+        ));
+        assert!(contains_yaml_comments(
+            "# whole-line comment\nmatches: []\n"
+        ));
     }
 
     #[test]
@@ -948,11 +978,17 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_paths_and_file_names() {
-        assert!(validate_relative_path(Path::new("../secret.yml")).is_err());
+        assert!(matches!(
+            validate_relative_path(Path::new("../secret.yml")),
+            Err(StorageError::Issue(StorageIssue::OutsideConfigPath))
+        ));
         assert!(validate_relative_path(Path::new("config/default.yml")).is_err());
         assert!(validate_config_relative_path(Path::new("../secret.yml")).is_err());
         assert!(validate_config_relative_path(Path::new("match/base.yml")).is_err());
-        assert!(normalize_file_name("../../oops").is_err());
+        assert!(matches!(
+            normalize_file_name("../../oops"),
+            Err(StorageError::Issue(StorageIssue::InvalidFileName))
+        ));
     }
 
     #[test]
@@ -1013,5 +1049,24 @@ mod tests {
         .unwrap();
         MatchFile::from_yaml(&fs::read_to_string(temp.path().join("match/base.yml")).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn snapshots_reject_destinations_inside_the_configuration_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_root(temp.path()).unwrap();
+
+        let result = create_backup_snapshot(temp.path(), &temp.path().join("exports"));
+
+        assert!(matches!(
+            result,
+            Err(StorageError::Issue(StorageIssue::BackupInsideConfig))
+        ));
+        assert!(
+            fs::read_dir(temp.path().join("exports"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 }

@@ -1,5 +1,5 @@
-name: Bug report
-description: Report a reproducible Espanso GUI problem
+name: Bug report / バグ報告
+description: Report a reproducible Espanso GUI problem / 再現可能な問題を報告
 title: "[Bug]: "
 labels: [bug, triage]
 body:
@@ -7,59 +7,60 @@ body:
     attributes:
       value: |
         Thank you. This tracker is for Espanso GUI only. Do not report this issue to the Espanso project.
+        ありがとうございます。この窓口はEspanso GUI専用です。この問題をEspansoプロジェクトへ報告しないでください。
   - type: input
     id: version
     attributes:
-      label: Espanso GUI version
+      label: Espanso GUI version / バージョン
       placeholder: 0.2.0
     validations:
       required: true
   - type: dropdown
     id: operating-system
     attributes:
-      label: Operating system
+      label: Operating system / OS
       options: [Windows, macOS, Linux]
     validations:
       required: true
   - type: input
     id: espanso-version
     attributes:
-      label: Espanso version
-      description: Use a placeholder if Espanso is not installed.
+      label: Espanso version / Espansoバージョン
+      description: Use a placeholder if Espanso is not installed. / Espansoが未導入の場合はその旨を記入してください。
   - type: textarea
     id: steps
     attributes:
-      label: Reproduction steps
-      description: Remove private snippet content, credentials, and personal paths.
+      label: Reproduction steps / 再現手順
+      description: Remove private snippet content, credentials, and personal paths. / 非公開のスニペット、認証情報、個人のパスを除いてください。
       placeholder: |
-        1. Open ...
-        2. Select ...
-        3. Observe ...
+        1. Open ... / ...を開く
+        2. Select ... / ...を選ぶ
+        3. Observe ... / ...を確認する
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: Expected behavior / 期待する動作
     validations:
       required: true
   - type: textarea
     id: actual
     attributes:
-      label: Actual behavior
+      label: Actual behavior / 実際の動作
     validations:
       required: true
   - type: textarea
     id: diagnostics
     attributes:
-      label: Sanitized diagnostics or sample YAML
+      label: Sanitized diagnostics or sample YAML / 匿名化した診断またはYAML例
       render: yaml
   - type: checkboxes
     id: safety
     attributes:
-      label: Privacy and project boundary
+      label: Privacy and project boundary / プライバシーとプロジェクト境界
       options:
-        - label: I removed secrets and personal data.
+        - label: I removed secrets and personal data. / 秘密情報と個人データを除きました。
           required: true
-        - label: I understand this issue belongs to Espanso GUI, not the Espanso project.
+        - label: I understand this issue belongs to Espanso GUI, not the Espanso project. / このIssueはEspansoではなくEspanso GUIに属することを理解しました。
           required: true

@@ -1,4 +1,5 @@
 use crate::model::{ConfigProfile, MatchFile};
+use crate::yaml_syntax;
 use serde::Serialize;
 
 pub fn patch_match_file(
@@ -106,13 +107,17 @@ fn patch_top_level_value(
         let first_line = serialized.lines().next().unwrap_or_default();
         let comment = existing
             .and_then(|index| {
-                strip_line_ending(lines[index])
-                    .find('#')
-                    .map(|at| (index, at))
+                yaml_syntax::comment_start(strip_line_ending(lines[index])).map(|at| (index, at))
             })
             .map(|(index, at)| strip_line_ending(lines[index])[at..].trim_end());
+        let replacement_line_ending = match existing {
+            Some(index) if lines[index].ends_with('\n') => line_ending,
+            Some(_) => "",
+            None if source.is_empty() || source.ends_with('\n') => line_ending,
+            None => "",
+        };
         format!(
-            "{first_line}{}{line_ending}",
+            "{first_line}{}{replacement_line_ending}",
             comment.map(|value| format!(" {value}")).unwrap_or_default()
         )
     } else {
@@ -120,10 +125,19 @@ fn patch_top_level_value(
     };
 
     if let Some(index) = existing {
+        let value_end = lines
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find_map(|(line_index, line)| {
+                let line = strip_line_ending(line);
+                (!line.trim().is_empty() && indentation(line) == 0).then_some(line_index)
+            })
+            .unwrap_or(lines.len());
         let mut output = String::new();
         output.push_str(&lines[..index].concat());
         output.push_str(&replacement);
-        output.push_str(&lines[index + 1..].concat());
+        output.push_str(&lines[value_end..].concat());
         Ok(output)
     } else if value.is_some() {
         let mut output = source.to_string();
@@ -224,8 +238,7 @@ where
     }
 
     let original_header = strip_line_ending(lines[header_index]);
-    let comment = original_header
-        .find('#')
+    let comment = yaml_syntax::comment_start(original_header)
         .map(|index| original_header[index..].trim_end());
     let block_header = original_header
         .split_once(':')
@@ -462,6 +475,71 @@ matches:
         assert!(output.contains("custom: &value keep\n"));
         assert!(output.contains("backend: clipboard\n"));
         assert!(output.ends_with("future: *value\n"));
+        assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
+    }
+
+    #[test]
+    fn profile_patch_never_reuses_a_hash_from_inside_a_quoted_value_as_a_comment() {
+        for (source, expected_line) in [
+            (
+                "search_trigger: \"#find\"\nshow_icon: true\n",
+                "search_trigger: .search\n",
+            ),
+            (
+                "search_trigger: \"#find\" # keep this\nshow_icon: true\n",
+                "search_trigger: .search # keep this\n",
+            ),
+        ] {
+            let previous = ConfigProfile::from_yaml(source).unwrap();
+            let mut next = previous.clone();
+            next.search_trigger = Some(".search".into());
+
+            let output = patch_config_profile(source, &previous, &next).unwrap();
+            assert!(output.starts_with(expected_line), "{output:?}");
+            assert!(!output.contains("#find"), "{output:?}");
+            assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
+        }
+    }
+
+    #[test]
+    fn profile_patch_replaces_the_complete_block_scalar_but_keeps_following_content() {
+        let source = "filter_title: |\n  Browser.*\n  # literal filter text\n# keep separator\nbackend: auto\n";
+        let previous = ConfigProfile::from_yaml(source).unwrap();
+        let mut next = previous.clone();
+        next.filter_title = Some("Firefox.*".into());
+
+        let output = patch_config_profile(source, &previous, &next).unwrap();
+        assert!(output.starts_with("filter_title: Firefox.*\n# keep separator\n"));
+        assert!(output.ends_with("backend: auto\n"));
+        assert!(!output.contains("Browser"));
+        assert!(!output.contains("literal filter text"));
+        assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
+    }
+
+    #[test]
+    fn profile_patch_preserves_crlf_without_introducing_lone_line_feeds() {
+        let source = "# profile\r\nfilter_exec: Code\r\nbackend: auto\r\n";
+        let previous = ConfigProfile::from_yaml(source).unwrap();
+        let mut next = previous.clone();
+        next.backend = Some("clipboard".into());
+
+        let output = patch_config_profile(source, &previous, &next).unwrap();
+
+        assert!(output.contains("backend: clipboard\r\n"));
+        assert_eq!(output.replace("\r\n", "").matches('\n').count(), 0);
+        assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
+    }
+
+    #[test]
+    fn profile_patch_preserves_a_missing_final_line_ending() {
+        let source = "filter_exec: Code\nbackend: auto";
+        let previous = ConfigProfile::from_yaml(source).unwrap();
+        let mut next = previous.clone();
+        next.backend = Some("clipboard".into());
+
+        let output = patch_config_profile(source, &previous, &next).unwrap();
+
+        assert_eq!(output, "filter_exec: Code\nbackend: clipboard");
         assert_eq!(ConfigProfile::from_yaml(&output).unwrap(), next);
     }
 }

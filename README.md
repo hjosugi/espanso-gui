@@ -1,17 +1,19 @@
 # Espanso GUI
 
+[English](README.md) | [日本語](README.ja.md)
+
 <img src="icons/icon.png" alt="Espanso GUI icon" width="128" height="128">
 
 **Espanso GUI** is a polished, cross-platform visual editor for [Espanso](https://espanso.org/), written entirely in Rust.
 
-EspansoのYAML設定を直接覚えなくても、スニペット、変数、フォーム、Markdown、HTML、画像を視覚的に作成・管理できます。Windows、macOS、Linuxで同じコードベースを使用します。
+Create and manage snippets, variables, forms, Markdown, HTML, and images visually without memorizing Espanso YAML. The same codebase supports Windows, macOS, and Linux.
 
 > [!IMPORTANT]
 > This is an independent, unofficial project. It is not affiliated with, endorsed by, or supported by Espanso or its maintainers. Please report Espanso GUI problems to this repository only—not to the Espanso project.
 
 ## Features
 
-- Three-pane snippet library with full-text search, labels, aliases, regex triggers, duplication, and safe deletion
+- Three-pane snippet library with full-text search across all snippet files, native `search_terms` tag filtering, persistent YAML/name/trigger sorting, labels, aliases, regex triggers, duplication, and safe deletion
 - Plain text, Markdown with live preview, HTML, image, and interactive form match editors
 - Safe visual HTML composer for emphasis, headings, links, lists, colors, and local images, with source mode always available
 - Point-and-click variable builder:
@@ -24,7 +26,7 @@ EspansoのYAML設定を直接覚えなくても、スニペット、変数、フ
 - Form field builder for text, multiline, choice, and list controls
 - Word-boundary, case propagation, injection mode, search terms, and cursor hints
 - Global variables, unresolved-variable diagnostics, and duplicate-trigger warnings
-- Raw YAML editor for advanced and future Espanso options
+- Syntax-colored Raw YAML editor for advanced and future Espanso options, with direct source editing that preserves comments
 - Existing unknown YAML fields are retained when structured data is loaded and saved
 - Comment-preserving structured edits for unchanged YAML, including anchors, block scalars, and quoting
 - Visual app-specific profiles for filters, backends, delays, shortcuts, form sizing, and other documented configuration options
@@ -32,7 +34,7 @@ EspansoのYAML設定を直接覚えなくても、スニペット、変数、フ
 - Persistent local backup history, one-click restoration, and recoverable file deletion
 - CSV import/export and full configuration snapshots
 - Espanso detection, status, start, stop, and restart controls
-- Japanese and English interface, 80–200% UI scaling, and keyboard navigation
+- Japanese and English interface, system/light/dark appearance, 32/24/20/18-point text roles, 40×48-point controls, 16×12-point input/button insets, persistent scroll bars, adaptive layouts at 80–200% UI scaling, and keyboard navigation
 - Espanso Hub package files are read-only; individual matches can be copied to a user file
 - No telemetry, cloud service, account, or background network access
 
@@ -83,7 +85,7 @@ Espanso GUI edits only the configuration folder selected in the app. Before over
 
 - Automatic backups: `<espanso-config>/.espanso-gui/backups/`
 - Recoverable deletions: `<espanso-config>/.espanso-gui/trash/`
-- Manual snapshots: destination selected by the user
+- Manual snapshots: a user-selected destination outside the active Espanso configuration folder
 
 Structured editing patches only changed YAML sequence items and top-level profile fields, preserving unchanged content—including comments, anchors, block scalars, quoting, and unknown fields—byte for byte. Any changed YAML fragment may still be reformatted. The original file remains in the automatic backup, and the Raw YAML tab is available when exact formatting of an edited fragment matters.
 
@@ -101,7 +103,7 @@ Espanso GUI reads public Espanso documentation to remain compatible but does not
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), release signing in [docs/SIGNING.md](docs/SIGNING.md), accessibility in [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md), and icon usage in [docs/BRANDING.md](docs/BRANDING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), release signing in [docs/SIGNING.md](docs/SIGNING.md), accessibility in [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md), the native audit in [docs/ACCESSIBILITY_AUDIT.md](docs/ACCESSIBILITY_AUDIT.md), the aText/Dash UX benchmark in [docs/UX_BENCHMARK.md](docs/UX_BENCHMARK.md), and icon usage in [docs/BRANDING.md](docs/BRANDING.md).
 
 ## License
 

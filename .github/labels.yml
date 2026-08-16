@@ -1,36 +1,36 @@
 - name: bug
   color: d73a4a
-  description: Something is not working
+  description: Something is not working / 正常に動作しない問題
 - name: enhancement
   color: a2eeef
-  description: New or improved user-facing behavior
+  description: New or improved user-facing behavior / 利用者向け機能の追加・改善
 - name: triage
   color: fbca04
-  description: Needs review and prioritization
+  description: Needs review and prioritization / 確認と優先順位付けが必要
 - name: data-safety
   color: b60205
-  description: Backups, recovery, conflicts, or user-data integrity
+  description: Backups, recovery, conflicts, or user-data integrity / バックアップ、復元、競合、ユーザーデータ保護
 - name: yaml
   color: 5319e7
-  description: Espanso YAML parsing or serialization
+  description: Espanso YAML parsing or serialization / Espanso YAMLの解析・書き出し
 - name: configuration
   color: 1d76db
-  description: Espanso configuration support
+  description: Espanso configuration support / Espanso設定対応
 - name: release
   color: 0e8a16
-  description: Packaging and publishing
+  description: Packaging and publishing / パッケージ作成と公開
 - name: security
   color: b60205
-  description: Security hardening
+  description: Security hardening / セキュリティ強化
 - name: platform
   color: c5def5
-  description: Windows, macOS, or Linux-specific work
+  description: Windows, macOS, or Linux-specific work / OS固有の対応
 - name: accessibility
   color: 7057ff
-  description: Keyboard, screen reader, contrast, or scalable UI
+  description: Keyboard, screen reader, contrast, or scalable UI / キーボード、読み上げ、コントラスト、表示倍率
 - name: i18n
   color: d4c5f9
-  description: Localization and language support
+  description: Localization and language support / ローカライズと言語対応
 - name: rich-text
   color: f9d0c4
-  description: Markdown, HTML, image, or formatting editor
+  description: Markdown, HTML, image, or formatting editor / Markdown、HTML、画像、書式編集

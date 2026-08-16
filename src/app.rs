@@ -1,58 +1,42 @@
 use crate::conflict::ResolutionChoice;
 use crate::espanso::{self, EspansoAction, EspansoStatus};
+use crate::html_editor;
 use crate::i18n::{self, Language, TextKey};
-use crate::model::{ContentKind, DiagnosticLevel, FormField, Snippet, Variable};
+use crate::model::{ContentKind, DiagnosticLevel, FormField, FormFieldKind, Snippet, Variable};
+use crate::navigation::{self, NavigationAction, Section};
+use crate::preferences::Preferences;
+use crate::profile_editor;
+use crate::settings_editor;
+use crate::snippet_editor::{editor_toolbar, trigger_mode_selector};
+use crate::snippet_library::{self, SnippetSort};
 use crate::storage::{self, ConfigFile, ExternalConflict, WorkspaceFile};
 use crate::theme;
+use crate::top_bar::{self, TopBarAction};
+use crate::ui_components::{
+    callout, centered_content_panel, centered_empty_state, centered_empty_state_action,
+    compact_collection_width, compact_layout, context_button_enabled, context_row_button,
+    context_selectable_value, danger_button, display_heading, labelled_two_column_field,
+    live_message_bar, modal_actions, multiline_text_edit, primary_button,
+    responsive_detail_actions, section_heading, selection_list_row, set_responsive_modal_size,
+    set_responsive_modal_width, show_modal, singleline_text_edit, snippet_card,
+    unambiguous_selectable_value, wrapped_path_label,
+};
+use crate::variable_editor::{variable_parameters, variable_summary};
+use crate::yaml_editor;
 use eframe::egui::{
-    self, Align, Button, Color32, ComboBox, FontFamily, FontId, Frame, Key, Layout, Margin,
-    RichText, ScrollArea, Sense, Stroke, TextEdit, Ui,
+    self, Align, Button, ComboBox, FontFamily, FontId, Frame, Key, Layout, Margin, RichText,
+    ScrollArea, Stroke, Ui,
 };
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const APP_STORAGE_KEY: &str = "espanso-gui.preferences";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Library,
-    Profiles,
-    Globals,
-    Diagnostics,
-    Settings,
-    About,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditorTab {
     Content,
     Variables,
     Options,
     RawYaml,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Preferences {
-    config_root: PathBuf,
-    #[serde(default)]
-    language: Language,
-    #[serde(default = "default_ui_scale")]
-    ui_scale: f32,
-}
-
-fn default_ui_scale() -> f32 {
-    1.0
-}
-
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            config_root: espanso::default_config_root(),
-            language: Language::default(),
-            ui_scale: default_ui_scale(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,11 +67,11 @@ struct VariableEditor {
 }
 
 impl VariableEditor {
-    fn new(scope: VariableScope, kind: &str) -> Self {
+    fn new(scope: VariableScope, kind: &str, language: Language) -> Self {
         Self {
             scope,
             index: None,
-            variable: Variable::new(kind),
+            variable: localized_new_variable(language, kind),
             insert_in_content: scope == VariableScope::Local,
         }
     }
@@ -138,7 +122,7 @@ pub struct EspansoGuiApp {
     editor_tab: EditorTab,
     search: String,
     message: Option<Message>,
-    load_error: Option<String>,
+    load_error: Option<storage::StorageError>,
     new_file_dialog: bool,
     new_file_name: String,
     new_config_dialog: bool,
@@ -170,27 +154,41 @@ impl EspansoGuiApp {
         if preferences.config_root.as_os_str().is_empty() {
             preferences.config_root.clone_from(&status.config_root);
         }
-        preferences.ui_scale = preferences.ui_scale.clamp(0.8, 2.0);
+        preferences.ui_scale = preferences
+            .ui_scale
+            .clamp(theme::UI_SCALE_MIN, theme::UI_SCALE_MAX);
+        theme::apply_appearance(&creation_context.egui_ctx, preferences.appearance);
         creation_context
             .egui_ctx
             .set_zoom_factor(preferences.ui_scale);
         let (files, config_files, load_error) = if preferences.config_root.join("match").is_dir() {
-            let matches = storage::load_workspace(&preferences.config_root);
-            let profiles = storage::load_config_profiles(&preferences.config_root);
-            let load_error = matches
-                .as_ref()
-                .err()
-                .map(ToString::to_string)
-                .or_else(|| profiles.as_ref().err().map(ToString::to_string));
-            (
-                matches.unwrap_or_default(),
-                profiles.unwrap_or_default(),
-                load_error,
-            )
+            let mut load_error = None;
+            let files = storage::load_workspace(&preferences.config_root).unwrap_or_else(|error| {
+                load_error = Some(error);
+                Vec::new()
+            });
+            let config_files = storage::load_config_profiles(&preferences.config_root)
+                .unwrap_or_else(|error| {
+                    if load_error.is_none() {
+                        load_error = Some(error);
+                    }
+                    Vec::new()
+                });
+            (files, config_files, load_error)
         } else {
             (Vec::new(), Vec::new(), None)
         };
 
+        Self::from_loaded(preferences, status, files, config_files, load_error)
+    }
+
+    fn from_loaded(
+        preferences: Preferences,
+        status: EspansoStatus,
+        files: Vec<WorkspaceFile>,
+        config_files: Vec<ConfigFile>,
+        load_error: Option<storage::StorageError>,
+    ) -> Self {
         Self {
             preferences,
             status,
@@ -240,11 +238,19 @@ impl EspansoGuiApp {
         });
     }
 
+    fn notify_storage_error(&mut self, error: storage::StorageError) {
+        self.notify(
+            MessageKind::Error,
+            i18n::storage_error_text(self.preferences.language, &error),
+        );
+    }
+
     fn reload_workspace(&mut self) {
+        let language = self.preferences.language;
         if self.has_dirty_files() {
             self.notify(
                 MessageKind::Error,
-                "未保存の変更があります。保存してから再読み込みしてください",
+                i18n::text(language, TextKey::SaveBeforeReload),
             );
             return;
         }
@@ -261,13 +267,17 @@ impl EspansoGuiApp {
                     .min(self.config_files.len().saturating_sub(1));
                 self.selected_snippet = 0;
                 self.load_error = None;
-                self.notify(MessageKind::Success, "Espanso設定を再読み込みしました");
+                self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::WorkspaceReloaded),
+                );
             }
-            (Err(error), _) | (_, Err(error)) => self.notify(MessageKind::Error, error.to_string()),
+            (Err(error), _) | (_, Err(error)) => self.notify_storage_error(error),
         }
     }
 
     fn save_selected(&mut self) {
+        let language = self.preferences.language;
         let root = self.preferences.config_root.clone();
         let index = self.selected_file;
         let Some(file) = self.files.get(index) else {
@@ -276,7 +286,7 @@ impl EspansoGuiApp {
         if file.is_package {
             self.notify(
                 MessageKind::Error,
-                "Hubパッケージは更新で上書きされるため直接保存できません。ユーザーファイルへコピーしてください",
+                i18n::text(language, TextKey::PackageCannotSave),
             );
             return;
         }
@@ -289,33 +299,35 @@ impl EspansoGuiApp {
                 });
                 self.notify(
                     MessageKind::Info,
-                    "外部変更を検出しました。local three-way mergeを確認してください",
+                    i18n::text(language, TextKey::ExternalChangeDetected),
                 );
                 return;
             }
             Ok(None) => {}
             Err(error) => {
-                self.notify(MessageKind::Error, error.to_string());
+                self.notify_storage_error(error);
                 return;
             }
         }
         let file = &mut self.files[index];
         match storage::save_workspace_file(&root, file) {
             Ok(receipt) => {
-                let backup = receipt
-                    .backup_path
-                    .map(|path| format!(" / バックアップ: {}", path.display()))
-                    .unwrap_or_default();
+                let backup_path = receipt.backup_path.map(|path| path.display().to_string());
                 self.notify(
                     MessageKind::Success,
-                    format!("保存しました{backup} / {}", &receipt.hash[..8]),
+                    i18n::workspace_saved_text(
+                        language,
+                        backup_path.as_deref(),
+                        &receipt.hash[..8],
+                    ),
                 );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
     fn save_selected_config(&mut self) {
+        let language = self.preferences.language;
         let root = self.preferences.config_root.clone();
         let index = self.selected_config;
         let Some(file) = self.config_files.get(index) else {
@@ -330,32 +342,26 @@ impl EspansoGuiApp {
                 });
                 self.notify(
                     MessageKind::Info,
-                    "外部変更を検出しました。local three-way mergeを確認してください",
+                    i18n::text(language, TextKey::ExternalChangeDetected),
                 );
                 return;
             }
             Ok(None) => {}
             Err(error) => {
-                self.notify(MessageKind::Error, error.to_string());
+                self.notify_storage_error(error);
                 return;
             }
         }
         let file = &mut self.config_files[index];
         match storage::save_config_file(&root, file) {
             Ok(receipt) => {
-                let backup = receipt
-                    .backup_path
-                    .map(|path| format!(" / バックアップ: {}", path.display()))
-                    .unwrap_or_default();
+                let backup_path = receipt.backup_path.map(|path| path.display().to_string());
                 self.notify(
                     MessageKind::Success,
-                    format!(
-                        "設定プロファイルを保存しました{backup} / {}",
-                        &receipt.hash[..8]
-                    ),
+                    i18n::profile_saved_text(language, backup_path.as_deref(), &receipt.hash[..8]),
                 );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
@@ -371,17 +377,21 @@ impl EspansoGuiApp {
         if let Some(file) = self.selected_file_mut()
             && let Err(error) = file.refresh_raw_from_document()
         {
-            self.notify(MessageKind::Error, error.to_string());
+            self.notify_storage_error(error);
         }
     }
 
     fn add_snippet(&mut self) {
+        let language = self.preferences.language;
         let index = if let Some(file) = self.selected_file_mut() {
             if file.is_package {
-                self.notify(MessageKind::Error, "パッケージには追加できません");
+                self.notify(
+                    MessageKind::Error,
+                    i18n::text(language, TextKey::PackageCannotAdd),
+                );
                 return;
             }
-            file.document.matches.push(Snippet::new());
+            file.document.matches.push(localized_new_snippet(language));
             file.document.matches.len() - 1
         } else {
             return;
@@ -392,12 +402,13 @@ impl EspansoGuiApp {
     }
 
     fn duplicate_snippet(&mut self) {
+        let language = self.preferences.language;
         let selected = self.selected_snippet;
         let index = if let Some(file) = self.selected_file_mut() {
             if file.is_package {
                 self.notify(
                     MessageKind::Info,
-                    "パッケージのコピーはユーザーファイルへ作成してください",
+                    i18n::text(language, TextKey::CopyPackageToUserFile),
                 );
                 return;
             }
@@ -405,7 +416,7 @@ impl EspansoGuiApp {
                 return;
             };
             if let Some(label) = &mut snippet.label {
-                label.push_str("（コピー）");
+                label.push_str(i18n::text(language, TextKey::CopySuffix));
             }
             let triggers = snippet
                 .trigger_list()
@@ -423,6 +434,7 @@ impl EspansoGuiApp {
     }
 
     fn copy_package_snippet_to_user_file(&mut self) {
+        let language = self.preferences.language;
         let Some(snippet) = self
             .selected_file()
             .and_then(|file| file.document.matches.get(self.selected_snippet))
@@ -438,7 +450,7 @@ impl EspansoGuiApp {
         let Some(target) = target else {
             self.notify(
                 MessageKind::Error,
-                "コピー先のユーザーファイルがありません。先にファイルを追加してください",
+                i18n::text(language, TextKey::MissingCopyTarget),
             );
             return;
         };
@@ -448,11 +460,12 @@ impl EspansoGuiApp {
         self.mark_selected_file_changed();
         self.notify(
             MessageKind::Success,
-            "ユーザーファイルへコピーしました（トリガーの重複を確認してください）",
+            i18n::text(language, TextKey::CopiedToUserFile),
         );
     }
 
     fn delete_selected_snippet(&mut self) {
+        let language = self.preferences.language;
         let selected = self.selected_snippet;
         if let Some(file) = self.selected_file_mut() {
             if file.is_package || selected >= file.document.matches.len() {
@@ -463,12 +476,13 @@ impl EspansoGuiApp {
             self.mark_selected_file_changed();
             self.notify(
                 MessageKind::Info,
-                "スニペットを削除しました（まだ未保存です）",
+                i18n::text(language, TextKey::SnippetDeleted),
             );
         }
     }
 
     fn create_file(&mut self) {
+        let language = self.preferences.language;
         match storage::create_match_file(&self.preferences.config_root, &self.new_file_name) {
             Ok(file) => {
                 self.files.push(file);
@@ -481,13 +495,17 @@ impl EspansoGuiApp {
                     .unwrap_or_default();
                 self.selected_snippet = 0;
                 self.new_file_dialog = false;
-                self.notify(MessageKind::Success, "スニペットファイルを作成しました");
+                self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::MatchFileCreated),
+                );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
     fn create_config_file(&mut self) {
+        let language = self.preferences.language;
         match storage::create_config_file(&self.preferences.config_root, &self.new_config_name) {
             Ok(file) => {
                 self.config_files.push(file);
@@ -499,20 +517,24 @@ impl EspansoGuiApp {
                     .position(|file| file.display_name == self.new_config_name.trim())
                     .unwrap_or_default();
                 self.new_config_dialog = false;
-                self.notify(MessageKind::Success, "設定プロファイルを作成しました");
+                self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::ProfileCreated),
+                );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
     fn delete_selected_file(&mut self) {
+        let language = self.preferences.language;
         let Some(file) = self.selected_file() else {
             return;
         };
         if file.is_package {
             self.notify(
                 MessageKind::Error,
-                "パッケージファイルはこの画面から削除できません",
+                i18n::text(language, TextKey::PackageCannotDelete),
             );
             return;
         }
@@ -524,33 +546,38 @@ impl EspansoGuiApp {
                 self.selected_snippet = 0;
                 self.notify(
                     MessageKind::Success,
-                    format!("ファイルを退避しました: {}", destination.display()),
+                    i18n::file_moved_text(language, &destination.display().to_string()),
                 );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
     fn initialize_config(&mut self) {
+        let language = self.preferences.language;
         match storage::initialize_root(&self.preferences.config_root) {
             Ok(()) => {
                 self.reload_workspace();
-                self.notify(MessageKind::Success, "Espanso設定フォルダを初期化しました");
+                self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::ConfigInitialized),
+                );
             }
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Err(error) => self.notify_storage_error(error),
         }
     }
 
     fn choose_config_root(&mut self) {
+        let language = self.preferences.language;
         if self.has_dirty_files() {
             self.notify(
                 MessageKind::Error,
-                "設定フォルダを変える前に未保存の変更を保存してください",
+                i18n::text(language, TextKey::SaveBeforeChangingFolder),
             );
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .set_title("Espanso設定フォルダを選択")
+            .set_title(i18n::text(language, TextKey::ChooseEspansoFolder))
             .pick_folder()
         {
             self.preferences.config_root = path;
@@ -564,20 +591,55 @@ impl EspansoGuiApp {
                 self.notify(
                     MessageKind::Success,
                     if result.output.is_empty() {
-                        format!("Espanso: {action}")
+                        i18n::espanso_action_completed(self.preferences.language, action).into()
                     } else {
                         result.output
                     },
                 );
                 self.status = espanso::detect();
             }
-            Ok(result) => self.notify(MessageKind::Error, result.output),
-            Err(error) => self.notify(MessageKind::Error, error.to_string()),
+            Ok(result) => self.notify(
+                MessageKind::Error,
+                if result.output.is_empty() {
+                    i18n::text(self.preferences.language, TextKey::EspansoCommandFailed).into()
+                } else {
+                    result.output
+                },
+            ),
+            Err(error) => self.notify(
+                MessageKind::Error,
+                i18n::espanso_command_error(self.preferences.language, &error.to_string()),
+            ),
         }
     }
 
+    fn open_espanso_documentation(&mut self) {
+        if let Err(error) = open::that("https://espanso.org/docs/") {
+            self.notify(
+                MessageKind::Error,
+                i18n::open_failed_text(self.preferences.language, &error.to_string()),
+            );
+        }
+    }
+
+    fn has_open_modal(&self) -> bool {
+        self.new_file_dialog
+            || self.new_config_dialog
+            || self.variable_editor.is_some()
+            || self.form_field_editor.is_some()
+            || self.pending_delete.is_some()
+            || self.conflict_dialog.is_some()
+            || self.pending_restore.is_some()
+            || self.confirm_close
+    }
+
     fn keyboard_shortcuts(&mut self, ui: &Ui) {
-        let (save, new, search, destination, escape) = ui.input(|input| {
+        // Modal dialogs own keyboard input while they are visible. In particular, this prevents
+        // global shortcuts from mutating the obscured editor and lets the top modal consume Escape.
+        if self.has_open_modal() {
+            return;
+        }
+        let (save, new, search, destination) = ui.input(|input| {
             let command = input.modifiers.command;
             let destination = if command && input.key_pressed(Key::Num1) {
                 Some(Section::Library)
@@ -597,7 +659,6 @@ impl EspansoGuiApp {
                 command && input.key_pressed(Key::N),
                 command && input.key_pressed(Key::F),
                 destination,
-                input.key_pressed(Key::Escape),
             )
         });
         if save {
@@ -613,16 +674,6 @@ impl EspansoGuiApp {
         if let Some(destination) = destination {
             self.section = destination;
         }
-        if escape {
-            self.new_file_dialog = false;
-            self.new_config_dialog = false;
-            self.variable_editor = None;
-            self.form_field_editor = None;
-            self.pending_delete = None;
-            self.conflict_dialog = None;
-            self.pending_restore = None;
-            self.confirm_close = false;
-        }
     }
 
     fn top_bar(&mut self, ui: &mut Ui) {
@@ -631,174 +682,39 @@ impl EspansoGuiApp {
         } else {
             self.selected_file().is_some_and(|file| !file.is_package)
         };
-        egui::Panel::top("top-bar")
-            .frame(
-                Frame::new()
-                    .fill(theme::PANEL)
-                    .inner_margin(Margin::symmetric(18, 10))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(218, 220, 212))),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("E/").size(23.0).strong().color(theme::ACCENT));
-                    ui.label(RichText::new("Espanso GUI").size(18.0).strong());
-                    ui.add_space(10.0);
-                    status_badge(ui, &self.status, self.preferences.language);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                can_save,
-                                Button::new(
-                                    RichText::new(format!(
-                                        "{}  ⌘S",
-                                        i18n::text(self.preferences.language, TextKey::Save)
-                                    ))
-                                    .strong(),
-                                )
-                                .fill(theme::ACCENT)
-                                .stroke(Stroke::NONE),
-                            )
-                            .clicked()
-                        {
-                            self.save_current();
-                        }
-                        if ui
-                            .button(i18n::text(self.preferences.language, TextKey::Reload))
-                            .clicked()
-                        {
-                            self.reload_workspace();
-                        }
-                        if self.status.installed
-                            && ui
-                                .button(i18n::text(
-                                    self.preferences.language,
-                                    TextKey::RestartEspanso,
-                                ))
-                                .clicked()
-                        {
-                            self.run_espanso_action(EspansoAction::Restart);
-                        }
-                        if self.has_dirty_files() {
-                            ui.label(
-                                RichText::new(i18n::text(
-                                    self.preferences.language,
-                                    TextKey::Unsaved,
-                                ))
-                                .color(theme::AMBER)
-                                .strong(),
-                            );
-                        }
-                    });
-                });
-            });
+        let action = top_bar::show(
+            ui,
+            &self.status,
+            self.preferences.language,
+            can_save,
+            self.has_dirty_files(),
+        );
+        match action {
+            Some(TopBarAction::Save) => self.save_current(),
+            Some(TopBarAction::Reload) => self.reload_workspace(),
+            Some(TopBarAction::RestartEspanso) => {
+                self.run_espanso_action(EspansoAction::Restart);
+            }
+            None => {}
+        }
     }
 
     fn navigation(&mut self, ui: &mut Ui) {
-        egui::Panel::left("navigation")
-            .exact_size(220.0)
-            .resizable(false)
-            .frame(
-                Frame::new()
-                    .fill(theme::SIDEBAR)
-                    .inner_margin(Margin::same(14)),
-            )
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                let language = self.preferences.language;
-                ui.label(
-                    RichText::new(i18n::text(language, TextKey::Workspace))
-                        .small()
-                        .color(theme::MUTED),
-                );
-                ui.add_space(4.0);
-                nav_button(
-                    ui,
-                    &mut self.section,
-                    Section::Library,
-                    i18n::text(language, TextKey::Snippets),
-                    "⌘1",
-                );
-                nav_button(
-                    ui,
-                    &mut self.section,
-                    Section::Profiles,
-                    i18n::text(language, TextKey::Profiles),
-                    "⌘2",
-                );
-                nav_button(
-                    ui,
-                    &mut self.section,
-                    Section::Globals,
-                    i18n::text(language, TextKey::Globals),
-                    "⌘3",
-                );
-                nav_button(
-                    ui,
-                    &mut self.section,
-                    Section::Diagnostics,
-                    i18n::text(language, TextKey::Diagnostics),
-                    "⌘4",
-                );
-                ui.add_space(16.0);
-                ui.label(RichText::new("Espanso").small().color(theme::MUTED));
-                ui.add_space(4.0);
-
-                ScrollArea::vertical().id_salt("file-list").show(ui, |ui| {
-                    let mut selected = None;
-                    for (index, file) in self.files.iter().enumerate() {
-                        let count = file.snippet_count();
-                        let dirty = if file.dirty { " •" } else { "" };
-                        let package = if file.is_package { "  package" } else { "" };
-                        let label =
-                            format!("{}{}\n{}件{}", file.display_name, dirty, count, package);
-                        if ui
-                            .add_sized(
-                                [190.0, 48.0],
-                                Button::new(label).selected(self.selected_file == index),
-                            )
-                            .clicked()
-                        {
-                            selected = Some(index);
-                        }
-                    }
-                    if let Some(index) = selected {
-                        self.selected_file = index;
-                        self.selected_snippet = 0;
-                    }
-                });
-
-                ui.add_space(6.0);
-                if ui
-                    .add_sized(
-                        [190.0, 34.0],
-                        Button::new(i18n::text(language, TextKey::AddFile)),
-                    )
-                    .clicked()
-                {
-                    self.new_file_dialog = true;
-                }
-                ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    nav_button(
-                        ui,
-                        &mut self.section,
-                        Section::About,
-                        i18n::text(language, TextKey::About),
-                        "",
-                    );
-                    nav_button(
-                        ui,
-                        &mut self.section,
-                        Section::Settings,
-                        i18n::text(language, TextKey::Settings),
-                        "⌘5",
-                    );
-                    ui.label(
-                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .small()
-                            .color(theme::MUTED),
-                    );
-                });
-            });
+        match navigation::show(
+            ui,
+            &mut self.section,
+            &self.files,
+            self.selected_file,
+            self.preferences.language,
+        ) {
+            Some(NavigationAction::SelectFile(index)) => {
+                self.selected_file = index;
+                self.selected_snippet = 0;
+            }
+            Some(NavigationAction::AddFile) => self.new_file_dialog = true,
+            Some(NavigationAction::Reload) => self.reload_workspace(),
+            None => {}
+        }
     }
 
     fn library_view(&mut self, ui: &mut Ui) {
@@ -810,27 +726,39 @@ impl EspansoGuiApp {
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
-                    .fill(theme::PAPER)
-                    .inner_margin(Margin::same(22)),
+                    .fill(theme::palette(ui).paper)
+                    .inner_margin(Margin::same(theme::PADDING_XL)),
             )
             .show(ui, |ui| self.snippet_editor(ui));
     }
 
     fn snippet_list(&mut self, ui: &mut Ui) {
+        let compact = compact_layout(ui.ctx().content_rect().width());
         egui::Panel::left("snippet-list")
-            .exact_size(330.0)
-            .resizable(true)
-            .size_range(280.0..=440.0)
+            .exact_size(if compact {
+                compact_collection_width(
+                    ui.ctx().content_rect().width(),
+                    theme::SNIPPET_LIST_COMPACT_WIDTH,
+                )
+            } else {
+                theme::SNIPPET_LIST_WIDTH
+            })
+            // egui's resize handle is exposed to AT-SPI as an unnamed focusable `unknown`
+            // control. Fixed responsive widths avoid a dead keyboard/screen-reader stop.
+            .resizable(false)
             .frame(
                 Frame::new()
-                    .fill(theme::PANEL)
-                    .inner_margin(Margin::same(14))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(220, 222, 214))),
+                    .fill(theme::palette(ui).panel)
+                    .inner_margin(Margin::same(theme::PADDING_LG))
+                    .stroke(Stroke::new(
+                        theme::STROKE_STANDARD,
+                        theme::palette(ui).border_subtle,
+                    )),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let language = self.preferences.language;
-                    ui.heading(i18n::text(language, TextKey::Snippets));
+                    section_heading(ui, i18n::text(language, TextKey::Snippets));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .button(i18n::text(language, TextKey::NewSnippet))
@@ -843,7 +771,7 @@ impl EspansoGuiApp {
                 let search_label = ui.label(i18n::text(self.preferences.language, TextKey::Search));
                 let search_response = ui
                     .add(
-                        TextEdit::singleline(&mut self.search)
+                        singleline_text_edit(&mut self.search)
                             .id_salt("snippet-search")
                             .hint_text(i18n::text(self.preferences.language, TextKey::SearchHint))
                             .desired_width(f32::INFINITY),
@@ -853,100 +781,157 @@ impl EspansoGuiApp {
                     search_response.request_focus();
                     self.focus_search = false;
                 }
-                ui.add_space(4.0);
+                ui.add_space(theme::SPACE_XS);
 
-                let search = self.search.to_lowercase();
-                let Some(file) = self.selected_file() else {
-                    return;
-                };
-                let snippets: Vec<_> = file
-                    .document
-                    .matches
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, snippet)| {
-                        search.is_empty() || snippet.searchable_text().contains(&search)
-                    })
-                    .map(|(index, snippet)| {
-                        (
-                            index,
-                            snippet.title(),
-                            snippet.trigger_list().join("  "),
-                            snippet
-                                .content()
-                                .lines()
-                                .next()
-                                .unwrap_or_default()
-                                .to_string(),
-                            snippet.content_kind().label(),
-                        )
-                    })
-                    .collect();
+                ui.horizontal(|ui| {
+                    let language = self.preferences.language;
+                    let sort_label = ui.label(i18n::text(language, TextKey::SortBy));
+                    let response = ComboBox::from_id_salt("snippet-sort")
+                        .selected_text(i18n::text(
+                            language,
+                            self.preferences.snippet_sort.text_key(),
+                        ))
+                        .show_ui(ui, |ui| {
+                            for sort in SnippetSort::ALL {
+                                ui.selectable_value(
+                                    &mut self.preferences.snippet_sort,
+                                    sort,
+                                    i18n::text(language, sort.text_key()),
+                                );
+                            }
+                        });
+                    response.response.labelled_by(sort_label.id);
+                });
+                ui.add_space(theme::SPACE_XS);
+
+                let tags = snippet_library::search_terms(&self.files);
+                if !tags.is_empty() {
+                    let normalized_search = self.search.trim().to_lowercase();
+                    let mut selected_tag = tags
+                        .iter()
+                        .find(|(tag, _)| tag.to_lowercase() == normalized_search)
+                        .map(|(tag, _)| tag.clone());
+                    let previous_tag = selected_tag.clone();
+                    ui.horizontal(|ui| {
+                        let language = self.preferences.language;
+                        let tag_label = ui.label(i18n::text(language, TextKey::FilterByTag));
+                        let response = ComboBox::from_id_salt("snippet-tag-filter")
+                            .selected_text(
+                                selected_tag
+                                    .as_deref()
+                                    .unwrap_or_else(|| i18n::text(language, TextKey::AllTags)),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut selected_tag,
+                                    None,
+                                    i18n::text(language, TextKey::AllTags),
+                                );
+                                for (tag, count) in &tags {
+                                    ui.selectable_value(
+                                        &mut selected_tag,
+                                        Some(tag.clone()),
+                                        format!("{tag} ({count})"),
+                                    );
+                                }
+                            });
+                        response.response.labelled_by(tag_label.id);
+                    });
+                    if selected_tag != previous_tag {
+                        self.search = selected_tag.unwrap_or_default();
+                        self.focus_search = true;
+                    }
+                    ui.add_space(theme::SPACE_XS);
+                }
+
+                let searching = !self.search.trim().is_empty();
+                let snippets = snippet_library::entries(
+                    &self.files,
+                    self.selected_file,
+                    &self.search,
+                    self.preferences.language,
+                    self.preferences.snippet_sort,
+                );
+                if searching {
+                    let result_count =
+                        i18n::search_result_count(self.preferences.language, snippets.len());
+                    let response = ui.label(
+                        RichText::new(result_count.clone())
+                            .small()
+                            .color(theme::palette(ui).muted),
+                    );
+                    ui.ctx().accesskit_node_builder(response.id, move |node| {
+                        node.set_label(result_count);
+                        node.set_live(egui::accesskit::Live::Polite);
+                    });
+                }
+                let mut clear_search = false;
                 ScrollArea::vertical()
                     .id_salt("snippets")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (index, title, triggers, preview, kind) in snippets {
-                            let selected = self.selected_snippet == index;
-                            let fill = if selected {
-                                theme::ACCENT_SOFT
-                            } else {
-                                theme::PANEL
-                            };
-                            let response = Frame::new()
-                                .fill(fill)
-                                .stroke(Stroke::new(
-                                    1.0,
-                                    if selected {
-                                        theme::ACCENT
-                                    } else {
-                                        Color32::from_rgb(223, 225, 217)
-                                    },
-                                ))
-                                .corner_radius(9)
-                                .inner_margin(Margin::same(10))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(title).strong());
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                ui.label(
-                                                    RichText::new(kind).small().color(theme::MUTED),
-                                                );
-                                            },
-                                        );
-                                    });
-                                    if !triggers.is_empty() {
-                                        ui.label(
-                                            RichText::new(triggers)
-                                                .family(FontFamily::Monospace)
-                                                .color(theme::ACCENT),
-                                        );
-                                    }
-                                    ui.label(
-                                        RichText::new(truncate(&preview, 66))
-                                            .small()
-                                            .color(theme::MUTED),
-                                    );
-                                })
-                                .response
-                                .interact(Sense::click());
+                        if snippets.is_empty() && searching {
+                            ui.add_space(theme::SPACE_LG);
+                            ui.vertical_centered(|ui| {
+                                section_heading(
+                                    ui,
+                                    i18n::text(self.preferences.language, TextKey::NoSearchResults),
+                                );
+                                ui.label(
+                                    RichText::new(i18n::text(
+                                        self.preferences.language,
+                                        TextKey::NoSearchResultsDescription,
+                                    ))
+                                    .small()
+                                    .color(theme::palette(ui).muted),
+                                );
+                                ui.add_space(theme::SPACE_MD);
+                                clear_search = ui
+                                    .button(i18n::text(
+                                        self.preferences.language,
+                                        TextKey::ClearSearch,
+                                    ))
+                                    .clicked();
+                            });
+                        }
+                        for entry in snippets {
+                            let selected = self.selected_file == entry.file_index
+                                && self.selected_snippet == entry.snippet_index;
+                            let response = snippet_card(
+                                ui,
+                                selected,
+                                &entry.title,
+                                &entry.triggers,
+                                &entry.preview,
+                                &entry.context,
+                            );
                             if response.clicked() {
-                                self.selected_snippet = index;
+                                self.selected_file = entry.file_index;
+                                self.selected_snippet = entry.snippet_index;
                                 self.editor_tab = EditorTab::Content;
                             }
-                            ui.add_space(6.0);
+                            ui.add_space(theme::SPACE_SM);
                         }
                     });
+                if clear_search {
+                    self.search.clear();
+                    self.focus_search = true;
+                }
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("複製").clicked() {
+                    let language = self.preferences.language;
+                    if ui
+                        .button(i18n::text(language, TextKey::Duplicate))
+                        .clicked()
+                    {
                         self.duplicate_snippet();
                     }
                     if ui
-                        .button(RichText::new("削除").color(theme::DANGER))
+                        .button(
+                            RichText::new(i18n::text(language, TextKey::Delete))
+                                .color(theme::palette(ui).danger),
+                        )
                         .clicked()
                     {
                         self.pending_delete = Some(PendingDelete::Snippet);
@@ -961,12 +946,13 @@ impl EspansoGuiApp {
             return;
         };
         if snippet_count == 0 {
-            centered_empty_state(
+            let language = self.preferences.language;
+            if centered_empty_state_action(
                 ui,
-                "まだスニペットがありません",
-                "最初のトリガーと展開内容を作成しましょう。",
-            );
-            if ui.button("最初のスニペットを作成").clicked() {
+                i18n::text(language, TextKey::NoSnippetsTitle),
+                i18n::text(language, TextKey::NoSnippetsDescription),
+                i18n::text(language, TextKey::CreateFirstSnippet),
+            ) {
                 self.add_snippet();
             }
             return;
@@ -982,35 +968,56 @@ impl EspansoGuiApp {
         };
         let original = snippet.clone();
 
-        ui.horizontal(|ui| {
-            ui.heading(snippet.title());
+        ui.horizontal_wrapped(|ui| {
+            let language = self.preferences.language;
+            display_heading(ui, &localized_snippet_title(language, &snippet));
             if is_package {
-                ui.label(RichText::new("読み取り専用パッケージ").color(theme::AMBER));
+                ui.label(
+                    RichText::new(i18n::text(language, TextKey::ReadOnlyPackage))
+                        .color(theme::palette(ui).amber),
+                );
             }
         });
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            tab_button(ui, &mut self.editor_tab, EditorTab::Content, "内容");
-            tab_button(ui, &mut self.editor_tab, EditorTab::Variables, "変数");
+        ui.add_space(theme::SPACE_SM);
+        ui.horizontal_wrapped(|ui| {
+            let language = self.preferences.language;
+            tab_button(
+                ui,
+                &mut self.editor_tab,
+                EditorTab::Content,
+                i18n::text(language, TextKey::Content),
+            );
+            tab_button(
+                ui,
+                &mut self.editor_tab,
+                EditorTab::Variables,
+                i18n::text(language, TextKey::Variables),
+            );
             tab_button(
                 ui,
                 &mut self.editor_tab,
                 EditorTab::Options,
-                "詳細オプション",
+                i18n::text(language, TextKey::AdvancedOptions),
             );
-            tab_button(ui, &mut self.editor_tab, EditorTab::RawYaml, "Raw YAML");
+            tab_button(
+                ui,
+                &mut self.editor_tab,
+                EditorTab::RawYaml,
+                i18n::text(language, TextKey::RawYaml),
+            );
         });
         ui.separator();
 
         if is_package {
-            ui.add_space(8.0);
+            let language = self.preferences.language;
+            ui.add_space(theme::SPACE_SM);
             callout(
                 ui,
-                theme::AMBER,
-                "Espanso Hubのパッケージは更新時に上書きされます。内容は確認できますが、直接編集は無効です。",
+                theme::palette(ui).amber,
+                i18n::text(language, TextKey::PackageEditorWarning),
             );
             if ui
-                .button("このスニペットをユーザーファイルへコピー")
+                .button(i18n::text(language, TextKey::CopyThisSnippet))
                 .clicked()
             {
                 self.copy_package_snippet_to_user_file();
@@ -1036,45 +1043,55 @@ impl EspansoGuiApp {
         {
             file.document.matches[self.selected_snippet] = snippet;
             if let Err(error) = file.refresh_raw_from_document() {
-                self.notify(MessageKind::Error, error.to_string());
+                self.notify_storage_error(error);
             }
         }
     }
 
     fn content_editor(&mut self, ui: &mut Ui, snippet: &mut Snippet) {
-        two_column_field(
+        let language = self.preferences.language;
+        labelled_two_column_field(
             ui,
-            "表示名",
-            "Espanso検索バーに表示するラベル",
-            |ui| {
+            i18n::text(language, TextKey::DisplayName),
+            i18n::text(language, TextKey::DisplayNameDescription),
+            |ui, label_id| {
                 let mut label = snippet.label.clone().unwrap_or_default();
                 if ui
-                    .add(TextEdit::singleline(&mut label).hint_text("例: 署名（日本語）"))
+                    .add(
+                        singleline_text_edit(&mut label)
+                            .hint_text(i18n::text(language, TextKey::DisplayNameHint)),
+                    )
+                    .labelled_by(label_id)
                     .changed()
                 {
                     snippet.label = (!label.trim().is_empty()).then_some(label);
                 }
             },
         );
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
 
-        let mut regex_mode = snippet.regex.is_some();
-        two_column_field(
+        let regex_mode = snippet.regex.is_some();
+        labelled_two_column_field(
             ui,
-            "トリガー",
-            "カンマ区切りで複数指定できます",
-            |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut regex_mode, false, "通常");
-                    ui.selectable_value(&mut regex_mode, true, "正規表現");
-                });
+            i18n::text(language, TextKey::Trigger),
+            i18n::text(
+                language,
+                if regex_mode {
+                    TextKey::RegexTriggerDescription
+                } else {
+                    TextKey::TriggerDescription
+                },
+            ),
+            |ui, label_id| {
+                let (regex_mode, _) = trigger_mode_selector(ui, language, snippet);
                 if regex_mode {
                     let mut regex = snippet.regex.clone().unwrap_or_default();
                     if ui
                         .add(
-                            TextEdit::singleline(&mut regex)
-                                .hint_text("例: :hello\\((?P<name>.*)\\)"),
+                            singleline_text_edit(&mut regex)
+                                .hint_text(i18n::text(language, TextKey::RegexTriggerHint)),
                         )
+                        .labelled_by(label_id)
                         .changed()
                     {
                         snippet.regex = Some(regex);
@@ -1084,7 +1101,8 @@ impl EspansoGuiApp {
                 } else {
                     let mut triggers = snippet.trigger_list().join(", ");
                     if ui
-                        .add(TextEdit::singleline(&mut triggers).hint_text(":sig, :signature"))
+                        .add(singleline_text_edit(&mut triggers).hint_text(":sig, :signature"))
+                        .labelled_by(label_id)
                         .changed()
                     {
                         snippet.set_trigger_list(triggers.split(',').map(str::to_string).collect());
@@ -1092,46 +1110,67 @@ impl EspansoGuiApp {
                 }
             },
         );
-        ui.add_space(14.0);
+        ui.add_space(theme::SPACE_LG);
 
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("展開タイプ").strong());
-            let mut kind = snippet.content_kind();
-            ComboBox::from_id_salt("content-kind")
-                .selected_text(kind.label())
-                .show_ui(ui, |ui| {
-                    for candidate in ContentKind::ALL {
-                        ui.selectable_value(&mut kind, candidate, candidate.label());
-                    }
-                });
-            if kind != snippet.content_kind() {
-                snippet.set_content_kind(kind);
-            }
-        });
+        labelled_two_column_field(
+            ui,
+            i18n::text(language, TextKey::ExpansionType),
+            "",
+            |ui, label_id| {
+                let mut kind = snippet.content_kind();
+                let kind_response = ComboBox::from_id_salt("content-kind")
+                    .selected_text(i18n::content_kind_label(language, kind))
+                    .show_ui(ui, |ui| {
+                        for candidate in ContentKind::ALL {
+                            ui.selectable_value(
+                                &mut kind,
+                                candidate,
+                                i18n::content_kind_label(language, candidate),
+                            );
+                        }
+                    });
+                kind_response.response.labelled_by(label_id);
+                if kind != snippet.content_kind() {
+                    snippet.set_content_kind(kind);
+                }
+            },
+        );
 
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_SM);
         if snippet.content_kind() == ContentKind::Html {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("HTML編集").strong());
-                ui.selectable_value(&mut self.html_source_mode, false, "Composer");
-                ui.selectable_value(&mut self.html_source_mode, true, "Source");
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(i18n::text(language, TextKey::HtmlEditing)).strong());
+                unambiguous_selectable_value(
+                    ui,
+                    &mut self.html_source_mode,
+                    false,
+                    i18n::text(language, TextKey::Composer),
+                );
+                unambiguous_selectable_value(
+                    ui,
+                    &mut self.html_source_mode,
+                    true,
+                    i18n::text(language, TextKey::Source),
+                );
                 ui.label(
-                    RichText::new("previewはactive contentを実行・取得しません")
+                    RichText::new(i18n::text(language, TextKey::SafeHtmlNotice))
                         .small()
-                        .color(theme::MUTED),
+                        .color(theme::palette(ui).muted),
                 );
             });
         }
-        editor_toolbar(ui, snippet);
-        ui.add_space(6.0);
+        editor_toolbar(ui, language, snippet);
+        ui.add_space(theme::SPACE_SM);
         match snippet.content_kind() {
             ContentKind::Image => self.image_editor(ui, snippet),
             ContentKind::Form => self.form_editor(ui, snippet),
             kind => {
+                let content_label =
+                    ui.label(RichText::new(i18n::text(language, TextKey::Content)).strong());
                 ui.add(
-                    TextEdit::multiline(snippet.content_mut())
+                    multiline_text_edit(snippet.content_mut())
                         .font(FontId::new(
-                            15.0,
+                            theme::TEXT_BODY,
                             if kind == ContentKind::Html && !self.html_source_mode {
                                 FontFamily::Proportional
                             } else {
@@ -1141,63 +1180,100 @@ impl EspansoGuiApp {
                         .desired_rows(14)
                         .desired_width(f32::INFINITY)
                         .hint_text(match kind {
-                            ContentKind::Html => "<strong>HTML</strong> を入力",
-                            ContentKind::Markdown => "**Markdown** を入力",
-                            _ => "展開するテキストを入力",
+                            ContentKind::Html => i18n::text(language, TextKey::HtmlContentHint),
+                            ContentKind::Markdown => {
+                                i18n::text(language, TextKey::MarkdownContentHint)
+                            }
+                            _ => i18n::text(language, TextKey::PlainContentHint),
                         }),
-                );
+                )
+                .labelled_by(content_label.id);
                 self.content_preview(ui, snippet);
             }
         }
     }
 
     fn image_editor(&mut self, ui: &mut Ui, snippet: &mut Snippet) {
-        ui.horizontal(|ui| {
-            ui.add(
-                TextEdit::singleline(snippet.content_mut())
-                    .hint_text("$CONFIG/assets/image.png または絶対パス")
-                    .desired_width(500.0),
-            );
-            if ui.button("画像を選択").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
-                    .pick_file()
-            {
-                *snippet.content_mut() = path.to_string_lossy().into_owned();
-            }
-        });
-        ui.add_space(10.0);
+        let language = self.preferences.language;
+        labelled_two_column_field(
+            ui,
+            i18n::text(language, TextKey::ImagePath),
+            i18n::text(language, TextKey::ImagePathHint),
+            |ui, label_id| {
+                ui.add(
+                    singleline_text_edit(snippet.content_mut())
+                        .hint_text(i18n::text(language, TextKey::ImagePathHint))
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(label_id);
+                if ui
+                    .button(i18n::text(language, TextKey::ChooseImage))
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter(
+                            i18n::text(language, TextKey::Image),
+                            &["png", "jpg", "jpeg", "gif", "webp"],
+                        )
+                        .pick_file()
+                {
+                    *snippet.content_mut() = path.to_string_lossy().into_owned();
+                }
+            },
+        );
+        ui.add_space(theme::SPACE_MD);
         let path = snippet.content();
         if !path.is_empty() && !path.contains("$CONFIG") {
+            let file_name = Path::new(path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(path);
             ui.add(
-                egui::Image::from_uri(format!("file://{path}")).max_size(egui::vec2(520.0, 320.0)),
+                egui::Image::from_uri(format!("file://{path}"))
+                    .alt_text(format!(
+                        "{}: {file_name}",
+                        i18n::text(language, TextKey::ImagePreview)
+                    ))
+                    .max_size(egui::vec2(
+                        theme::IMAGE_PREVIEW_MAX_SIZE[0],
+                        theme::IMAGE_PREVIEW_MAX_SIZE[1],
+                    )),
             );
         } else {
             callout(
                 ui,
-                theme::ACCENT,
-                "$CONFIGはEspanso設定フォルダへ展開されます。LinuxではPNGが最も互換性の高い形式です。",
+                theme::palette(ui).accent,
+                i18n::text(language, TextKey::ImageCompatibility),
             );
         }
     }
 
     fn form_editor(&mut self, ui: &mut Ui, snippet: &mut Snippet) {
+        let language = self.preferences.language;
         callout(
             ui,
-            theme::ACCENT,
-            "本文中に [[name]] のように書くと、Espanso展開時に入力欄が表示されます。",
+            theme::palette(ui).accent,
+            i18n::text(language, TextKey::FormEditorDescription),
         );
+        let form_content_label = ui.label(i18n::text(language, TextKey::FormContent));
         ui.add(
-            TextEdit::multiline(snippet.content_mut())
-                .font(FontId::new(15.0, FontFamily::Monospace))
+            multiline_text_edit(snippet.content_mut())
+                .font(FontId::new(theme::TEXT_BODY, FontFamily::Monospace))
                 .desired_rows(9)
                 .desired_width(f32::INFINITY)
-                .hint_text("お名前: [[name]]\n種類: [[plan]]"),
-        );
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("フォーム項目").strong().size(17.0));
-            if ui.button("＋ 項目を追加").clicked() {
+                .hint_text(i18n::text(language, TextKey::FormContentHint)),
+        )
+        .labelled_by(form_content_label.id);
+        ui.add_space(theme::SPACE_MD);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(i18n::text(language, TextKey::FormFields))
+                    .strong()
+                    .size(theme::TEXT_SECTION),
+            );
+            if ui
+                .button(i18n::text(language, TextKey::AddFormField))
+                .clicked()
+            {
                 self.form_field_editor = Some(FormFieldEditor {
                     original_name: None,
                     name: "field".into(),
@@ -1213,33 +1289,40 @@ impl EspansoGuiApp {
         let mut remove = None;
         for (name, field) in fields {
             Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("[[{name}]]"))
-                            .family(FontFamily::Monospace)
-                            .strong(),
-                    );
-                    ui.label(field_kind_label(&field));
-                    if let Some(default) = &field.default {
+                responsive_detail_actions(
+                    ui,
+                    |ui| {
                         ui.label(
-                            RichText::new(format!("既定: {default}"))
-                                .small()
-                                .color(theme::MUTED),
+                            RichText::new(format!("[[{name}]]"))
+                                .family(FontFamily::Monospace)
+                                .strong(),
                         );
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("削除").clicked() {
-                            remove = Some(name.clone());
+                        ui.label(i18n::form_field_kind_label(language, &field.kind()));
+                        if let Some(default) = &field.default {
+                            ui.label(
+                                RichText::new(i18n::default_value_text(language, default))
+                                    .small()
+                                    .color(theme::palette(ui).muted),
+                            );
                         }
-                        if ui.small_button("編集").clicked() {
+                    },
+                    |ui| {
+                        if context_row_button(ui, i18n::text(language, TextKey::Edit), &name)
+                            .clicked()
+                        {
                             self.form_field_editor = Some(FormFieldEditor {
                                 original_name: Some(name.clone()),
                                 name: name.clone(),
                                 field: field.clone(),
                             });
                         }
-                    });
-                });
+                        if context_row_button(ui, i18n::text(language, TextKey::Delete), &name)
+                            .clicked()
+                        {
+                            remove = Some(name.clone());
+                        }
+                    },
+                );
             });
         }
         if let Some(name) = remove {
@@ -1248,31 +1331,42 @@ impl EspansoGuiApp {
     }
 
     fn content_preview(&mut self, ui: &mut Ui, snippet: &Snippet) {
-        ui.add_space(14.0);
-        ui.label(RichText::new("ライブプレビュー").strong().size(17.0));
+        let language = self.preferences.language;
+        ui.add_space(theme::SPACE_LG);
+        ui.label(
+            RichText::new(i18n::text(language, TextKey::LivePreview))
+                .strong()
+                .size(theme::TEXT_SECTION),
+        );
         Frame::new()
-            .fill(theme::PANEL)
-            .stroke(Stroke::new(1.0, Color32::from_rgb(216, 220, 211)))
-            .corner_radius(9)
-            .inner_margin(Margin::same(14))
+            .fill(theme::palette(ui).panel)
+            .stroke(Stroke::new(
+                theme::STROKE_STANDARD,
+                theme::palette(ui).border_subtle,
+            ))
+            .corner_radius(theme::RADIUS_CARD)
+            .inner_margin(Margin::same(theme::PADDING_LG))
             .show(ui, |ui| match snippet.content_kind() {
                 ContentKind::Markdown => {
                     CommonMarkViewer::new().show(ui, &mut self.markdown_cache, snippet.content());
                 }
                 ContentKind::Html => {
                     ui.label(
-                        RichText::new("安全なテキストpreview（script/style/remote contentは実行・取得しません）")
+                        RichText::new(i18n::text(language, TextKey::SafeTextPreview))
                             .small()
-                            .color(theme::MUTED),
+                            .color(theme::palette(ui).muted),
                     );
-                    let preview = safe_html_preview(snippet.content());
+                    let preview = html_editor::safe_preview(language, snippet.content());
                     if preview.trim().is_empty() {
-                        ui.label(RichText::new("previewできる本文がありません").color(theme::MUTED));
+                        ui.label(
+                            RichText::new(i18n::text(language, TextKey::NoPreviewContent))
+                                .color(theme::palette(ui).muted),
+                        );
                     } else {
                         ui.label(preview);
                     }
                     if self.html_source_mode {
-                        ui.collapsing("生成source", |ui| {
+                        ui.collapsing(i18n::text(language, TextKey::GeneratedSource), |ui| {
                             ui.code(snippet.content());
                         });
                     }
@@ -1284,29 +1378,34 @@ impl EspansoGuiApp {
     }
 
     fn variables_editor(&mut self, ui: &mut Ui, snippet: &mut Snippet) {
+        let language = self.preferences.language;
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("すぐ追加").strong());
-            for (kind, label) in [
-                ("date", "日付・時刻"),
-                ("clipboard", "クリップボード"),
-                ("choice", "候補選択"),
-                ("form", "フォーム"),
-                ("random", "ランダム"),
-                ("echo", "固定値"),
-                ("shell", "シェル"),
-                ("script", "スクリプト"),
+            ui.label(RichText::new(i18n::text(language, TextKey::QuickAdd)).strong());
+            for kind in [
+                "date",
+                "clipboard",
+                "choice",
+                "form",
+                "random",
+                "echo",
+                "shell",
+                "script",
             ] {
-                if ui.button(format!("＋ {label}")).clicked() {
-                    self.variable_editor = Some(VariableEditor::new(VariableScope::Local, kind));
+                if ui
+                    .button(format!("＋ {}", i18n::variable_kind_label(language, kind)))
+                    .clicked()
+                {
+                    self.variable_editor =
+                        Some(VariableEditor::new(VariableScope::Local, kind, language));
                 }
             }
         });
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
         if snippet.vars.is_empty() {
             centered_empty_state(
                 ui,
-                "このスニペットには変数がありません",
-                "上のボタンから種類を選ぶだけで追加できます。",
+                i18n::text(language, TextKey::NoVariablesTitle),
+                i18n::text(language, TextKey::NoVariablesDescription),
             );
         }
 
@@ -1314,20 +1413,39 @@ impl EspansoGuiApp {
         let variables = snippet.vars.clone();
         for (index, variable) in variables.iter().enumerate() {
             Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(&variable.name).strong().size(16.0));
-                        ui.label(
-                            RichText::new(format!("{}  {}", variable.kind, variable.token()))
-                                .family(FontFamily::Monospace)
-                                .color(theme::ACCENT),
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("削除").clicked() {
-                            remove = Some(index);
+                responsive_detail_actions(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&variable.name)
+                                    .strong()
+                                    .size(theme::TEXT_BODY),
+                            );
+                            ui.label(
+                                RichText::new(format!("{}  {}", variable.kind, variable.token()))
+                                    .family(FontFamily::Monospace)
+                                    .color(theme::palette(ui).accent),
+                            );
+                        });
+                    },
+                    |ui| {
+                        if context_row_button(
+                            ui,
+                            i18n::text(language, TextKey::InsertIntoContent),
+                            &variable.name,
+                        )
+                        .clicked()
+                        {
+                            snippet.insert_token(&variable.token());
                         }
-                        if ui.small_button("編集").clicked() {
+                        if context_row_button(
+                            ui,
+                            i18n::text(language, TextKey::Edit),
+                            &variable.name,
+                        )
+                        .clicked()
+                        {
                             self.variable_editor = Some(VariableEditor {
                                 scope: VariableScope::Local,
                                 index: Some(index),
@@ -1335,14 +1453,20 @@ impl EspansoGuiApp {
                                 insert_in_content: false,
                             });
                         }
-                        if ui.small_button("本文に挿入").clicked() {
-                            snippet.insert_token(&variable.token());
+                        if context_row_button(
+                            ui,
+                            i18n::text(language, TextKey::Delete),
+                            &variable.name,
+                        )
+                        .clicked()
+                        {
+                            remove = Some(index);
                         }
-                    });
-                });
-                variable_summary(ui, variable);
+                    },
+                );
+                variable_summary(ui, language, variable);
             });
-            ui.add_space(6.0);
+            ui.add_space(theme::SPACE_SM);
         }
         if let Some(index) = remove {
             snippet.vars.remove(index);
@@ -1355,105 +1479,151 @@ impl EspansoGuiApp {
         {
             callout(
                 ui,
-                theme::AMBER,
-                "シェル／スクリプト変数はトリガー実行時にローカルコマンドを実行します。自分で内容を確認したコードだけを使用してください。",
+                theme::palette(ui).amber,
+                i18n::text(language, TextKey::ScriptVariableWarning),
             );
         }
     }
 
     fn options_editor(&mut self, ui: &mut Ui, snippet: &mut Snippet) {
-        ui.heading("トリガー条件");
+        let language = self.preferences.language;
+        section_heading(ui, i18n::text(language, TextKey::TriggerConditions));
         option_checkbox(
             ui,
+            language,
             &mut snippet.word,
-            "単語単位（word）",
-            "単語の区切りに囲まれた場合だけ展開",
+            i18n::text(language, TextKey::WholeWord),
+            i18n::text(language, TextKey::WholeWordDescription),
         );
         option_checkbox(
             ui,
+            language,
             &mut snippet.left_word,
-            "単語の左端（left_word）",
-            "単語の先頭でだけ展開",
+            i18n::text(language, TextKey::LeftWord),
+            i18n::text(language, TextKey::LeftWordDescription),
         );
         option_checkbox(
             ui,
+            language,
             &mut snippet.right_word,
-            "単語の右端（right_word）",
-            "単語の末尾でだけ展開",
+            i18n::text(language, TextKey::RightWord),
+            i18n::text(language, TextKey::RightWordDescription),
         );
-        ui.add_space(14.0);
-        ui.heading("大文字・小文字");
+        ui.add_space(theme::SPACE_LG);
+        section_heading(ui, i18n::text(language, TextKey::LetterCase));
         option_checkbox(
             ui,
+            language,
             &mut snippet.propagate_case,
-            "入力のケースを引き継ぐ",
-            "hello / Hello / HELLO に合わせて展開結果を変換",
+            i18n::text(language, TextKey::PropagateCase),
+            i18n::text(language, TextKey::PropagateCaseDescription),
         );
-        two_column_field(
+        labelled_two_column_field(
             ui,
-            "大文字スタイル",
-            "複数単語の変換方法",
-            |ui| {
+            i18n::text(language, TextKey::UppercaseStyle),
+            i18n::text(language, TextKey::UppercaseStyleDescription),
+            |ui, label_id| {
                 let mut style = snippet.uppercase_style.clone().unwrap_or_default();
-                ComboBox::from_id_salt("uppercase-style")
-                    .selected_text(if style.is_empty() { "標準" } else { &style })
+                let response = ComboBox::from_id_salt("uppercase-style")
+                    .selected_text(if style.is_empty() {
+                        i18n::text(language, TextKey::Standard)
+                    } else {
+                        &style
+                    })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut style, String::new(), "標準");
+                        ui.selectable_value(
+                            &mut style,
+                            String::new(),
+                            i18n::text(language, TextKey::Standard),
+                        );
                         ui.selectable_value(
                             &mut style,
                             "capitalize_words".into(),
-                            "各単語を大文字",
+                            i18n::text(language, TextKey::CapitalizeWords),
                         );
-                        ui.selectable_value(&mut style, "capitalize".into(), "先頭のみ大文字");
+                        ui.selectable_value(
+                            &mut style,
+                            "capitalize".into(),
+                            i18n::text(language, TextKey::CapitalizeFirst),
+                        );
                     });
+                response.response.labelled_by(label_id);
                 snippet.uppercase_style = (!style.is_empty()).then_some(style);
             },
         );
-        ui.add_space(14.0);
-        ui.heading("展開方法");
-        two_column_field(
+        ui.add_space(theme::SPACE_LG);
+        section_heading(ui, i18n::text(language, TextKey::ExpansionMethod));
+        labelled_two_column_field(
             ui,
-            "強制モード",
-            "問題があるアプリ向けの上書き",
-            |ui| {
+            i18n::text(language, TextKey::ForceMode),
+            i18n::text(language, TextKey::ForceModeDescription),
+            |ui, label_id| {
                 let mut mode = snippet.force_mode.clone().unwrap_or_default();
-                ComboBox::from_id_salt("force-mode")
-                    .selected_text(if mode.is_empty() { "自動" } else { &mode })
+                let response = ComboBox::from_id_salt("force-mode")
+                    .selected_text(if mode.is_empty() {
+                        i18n::text(language, TextKey::Automatic)
+                    } else {
+                        &mode
+                    })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut mode, String::new(), "自動");
-                        ui.selectable_value(&mut mode, "clipboard".into(), "clipboard");
-                        ui.selectable_value(&mut mode, "keys".into(), "keys");
+                        ui.selectable_value(
+                            &mut mode,
+                            String::new(),
+                            i18n::text(language, TextKey::Automatic),
+                        );
+                        ui.selectable_value(
+                            &mut mode,
+                            "clipboard".into(),
+                            i18n::text(language, TextKey::Clipboard),
+                        );
+                        ui.selectable_value(
+                            &mut mode,
+                            "keys".into(),
+                            i18n::text(language, TextKey::KeyInjection),
+                        );
                     });
+                response.response.labelled_by(label_id);
                 snippet.force_mode = (!mode.is_empty()).then_some(mode);
             },
         );
         if snippet.content_kind() == ContentKind::Markdown {
             option_checkbox(
                 ui,
+                language,
                 &mut snippet.paragraph,
-                "段落として貼り付けない",
-                "markdownのparagraphオプション",
+                i18n::text(language, TextKey::NoMarkdownParagraph),
+                i18n::text(language, TextKey::NoMarkdownParagraphDescription),
             );
         }
-        ui.add_space(14.0);
-        ui.heading("検索");
+        ui.add_space(theme::SPACE_LG);
+        section_heading(ui, i18n::text(language, TextKey::Search));
         let mut terms = snippet.search_terms.join(", ");
-        two_column_field(ui, "検索キーワード", "カンマ区切り", |ui| {
-            if ui
-                .add(TextEdit::singleline(&mut terms).hint_text("署名, email, work"))
-                .changed()
-            {
-                snippet.search_terms = terms
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|term| !term.is_empty())
-                    .map(str::to_string)
-                    .collect();
-            }
-        });
+        labelled_two_column_field(
+            ui,
+            i18n::text(language, TextKey::SearchKeywords),
+            i18n::text(language, TextKey::CommaSeparated),
+            |ui, label_id| {
+                if ui
+                    .add(
+                        singleline_text_edit(&mut terms)
+                            .hint_text(i18n::text(language, TextKey::SearchKeywordsHint)),
+                    )
+                    .labelled_by(label_id)
+                    .changed()
+                {
+                    snippet.search_terms = terms
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|term| !term.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                }
+            },
+        );
     }
 
     fn raw_yaml_editor(&mut self, ui: &mut Ui) {
+        let language = self.preferences.language;
         let apply_clicked = {
             let Some(file) = self.files.get_mut(self.selected_file) else {
                 return;
@@ -1461,32 +1631,29 @@ impl EspansoGuiApp {
             if file.had_comments {
                 callout(
                     ui,
-                    theme::AMBER,
-                    "構造化エディタで変更するとコメント位置は再整形されます。元ファイルは保存時に自動バックアップされます。Raw YAMLだけの編集ならコメントを維持できます。",
+                    theme::palette(ui).amber,
+                    i18n::text(language, TextKey::RawYamlFormattingWarning),
                 );
             }
-            ui.label(
+            let raw_yaml_label = ui.label(
                 RichText::new(file.relative_path.display().to_string())
                     .family(FontFamily::Monospace),
             );
-            let changed = ui
-                .add(
-                    TextEdit::multiline(&mut file.raw_yaml)
-                        .font(FontId::new(14.0, FontFamily::Monospace))
-                        .desired_rows(28)
-                        .desired_width(f32::INFINITY),
-                )
+            let changed = yaml_editor::editor(ui, &mut file.raw_yaml, 28)
+                .labelled_by(raw_yaml_label.id)
                 .changed();
             if changed {
                 file.dirty = true;
             }
             let mut apply_clicked = false;
-            ui.horizontal(|ui| {
-                apply_clicked = ui.button("YAMLを検証して適用").clicked();
+            ui.horizontal_wrapped(|ui| {
+                apply_clicked = ui
+                    .button(i18n::text(language, TextKey::ValidateAndApplyYaml))
+                    .clicked();
                 ui.label(
-                    RichText::new("保存時にも必ず検証します")
+                    RichText::new(i18n::text(language, TextKey::ValidateAgainOnSave))
                         .small()
-                        .color(theme::MUTED),
+                        .color(theme::palette(ui).muted),
                 );
             });
             apply_clicked
@@ -1494,30 +1661,44 @@ impl EspansoGuiApp {
         if apply_clicked {
             let result = self.files[self.selected_file].apply_raw_yaml();
             match result {
-                Ok(()) => self.notify(MessageKind::Success, "YAMLは有効です"),
-                Err(error) => self.notify(MessageKind::Error, error.to_string()),
+                Ok(()) => self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::YamlValid),
+                ),
+                Err(error) => self.notify_storage_error(error),
             }
         }
     }
 
     fn profiles_view(&mut self, ui: &mut Ui) {
+        let compact = compact_layout(ui.ctx().content_rect().width());
         egui::Panel::left("profile-list")
-            .exact_size(280.0)
-            .resizable(true)
-            .size_range(240.0..=380.0)
+            .exact_size(if compact {
+                compact_collection_width(
+                    ui.ctx().content_rect().width(),
+                    theme::PROFILE_LIST_COMPACT_WIDTH,
+                )
+            } else {
+                theme::PROFILE_LIST_WIDTH
+            })
+            .resizable(false)
             .frame(
                 Frame::new()
-                    .fill(theme::PANEL)
-                    .inner_margin(Margin::same(14))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(218, 220, 212))),
+                    .fill(theme::palette(ui).panel)
+                    .inner_margin(Margin::same(theme::PADDING_LG))
+                    .stroke(Stroke::new(
+                        theme::STROKE_STANDARD,
+                        theme::palette(ui).border_subtle,
+                    )),
             )
             .show(ui, |ui| {
-                ui.heading("設定プロファイル");
+                let language = self.preferences.language;
+                section_heading(ui, i18n::text(language, TextKey::ProfileListTitle));
                 ui.label(
                     RichText::new("config/*.yml")
                         .family(FontFamily::Monospace)
                         .small()
-                        .color(theme::MUTED),
+                        .color(theme::palette(ui).muted),
                 );
                 ui.separator();
                 ScrollArea::vertical()
@@ -1526,27 +1707,29 @@ impl EspansoGuiApp {
                         for (index, file) in self.config_files.iter().enumerate() {
                             let dirty = if file.dirty { " •" } else { "" };
                             let kind = if file.is_default {
-                                "既定"
+                                i18n::text(language, TextKey::DefaultProfile)
                             } else if file.profile.has_filter() {
-                                "アプリ別"
+                                i18n::text(language, TextKey::AppProfile)
                             } else {
-                                "フィルター未設定"
+                                i18n::text(language, TextKey::MissingFilter)
                             };
-                            if ui
-                                .add_sized(
-                                    [250.0, 48.0],
-                                    Button::new(format!("{}{dirty}\n{kind}", file.display_name))
-                                        .selected(self.selected_config == index),
-                                )
-                                .clicked()
+                            if selection_list_row(
+                                ui,
+                                format!("{}{dirty}\n{kind}", file.display_name),
+                                self.selected_config == index,
+                            )
+                            .clicked()
                             {
                                 self.selected_config = index;
                             }
                         }
                     });
-                ui.add_space(6.0);
+                ui.add_space(theme::SPACE_SM);
                 if ui
-                    .add_sized([250.0, 34.0], Button::new("＋ プロファイルを追加"))
+                    .add_sized(
+                        [ui.available_width(), theme::CONTROL_HEIGHT],
+                        Button::new(i18n::text(language, TextKey::AddProfile)),
+                    )
                     .clicked()
                 {
                     self.new_config_dialog = true;
@@ -1556,17 +1739,18 @@ impl EspansoGuiApp {
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
-                    .fill(theme::PAPER)
-                    .inner_margin(Margin::same(22)),
+                    .fill(theme::palette(ui).paper)
+                    .inner_margin(Margin::same(theme::PADDING_XL)),
             )
             .show(ui, |ui| {
                 if self.config_files.is_empty() {
-                    centered_empty_state(
+                    let language = self.preferences.language;
+                    if centered_empty_state_action(
                         ui,
-                        "設定プロファイルがありません",
-                        "default またはアプリ別プロファイルを追加できます。",
-                    );
-                    if ui.button("最初のプロファイルを追加").clicked() {
+                        i18n::text(language, TextKey::NoProfilesTitle),
+                        i18n::text(language, TextKey::NoProfilesDescription),
+                        i18n::text(language, TextKey::AddFirstProfile),
+                    ) {
                         self.new_config_dialog = true;
                     }
                     return;
@@ -1577,21 +1761,34 @@ impl EspansoGuiApp {
                     .min(self.config_files.len().saturating_sub(1));
                 self.selected_config = index;
                 let file = &self.config_files[index];
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading(&file.display_name);
-                        ui.label(
-                            RichText::new(file.relative_path.display().to_string())
-                                .family(FontFamily::Monospace)
-                                .small()
-                                .color(theme::MUTED),
+                responsive_detail_actions(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            display_heading(ui, &file.display_name);
+                            ui.label(
+                                RichText::new(file.relative_path.display().to_string())
+                                    .family(FontFamily::Monospace)
+                                    .small()
+                                    .color(theme::palette(ui).muted),
+                            );
+                        });
+                    },
+                    |ui| {
+                        unambiguous_selectable_value(
+                            ui,
+                            &mut self.profile_raw_yaml,
+                            false,
+                            i18n::text(self.preferences.language, TextKey::Visual),
                         );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.selectable_value(&mut self.profile_raw_yaml, true, "Raw YAML");
-                        ui.selectable_value(&mut self.profile_raw_yaml, false, "ビジュアル");
-                    });
-                });
+                        unambiguous_selectable_value(
+                            ui,
+                            &mut self.profile_raw_yaml,
+                            true,
+                            i18n::text(self.preferences.language, TextKey::RawYaml),
+                        );
+                    },
+                );
                 ui.separator();
 
                 if self.profile_raw_yaml {
@@ -1603,269 +1800,93 @@ impl EspansoGuiApp {
     }
 
     fn profile_visual_editor(&mut self, ui: &mut Ui, index: usize) {
+        let language = self.preferences.language;
         let is_default = self.config_files[index].is_default;
         let original = self.config_files[index].profile.clone();
         let mut profile = original.clone();
 
-        ScrollArea::vertical()
-            .id_salt("profile-editor-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if is_default {
-                    callout(
-                        ui,
-                        theme::ACCENT,
-                        "default.yml はすべてのアプリの基準です。アプリ別ファイルはここで設定した値を継承します。",
-                    );
-                } else {
-                    callout(
-                        ui,
-                        theme::ACCENT,
-                        "フィルターは正規表現です。WaylandではEspansoのアプリ別設定自体が未対応です。",
-                    );
-                    ui.add_space(10.0);
-                    ui.heading("適用するアプリ");
-                    optional_text_field(
-                        ui,
-                        &mut profile.filter_exec,
-                        "実行ファイル（filter_exec）",
-                        "例: Code|VSCodium",
-                    );
-                    optional_text_field(
-                        ui,
-                        &mut profile.filter_class,
-                        "ウィンドウクラス（filter_class）",
-                        "Linuxでは最も安定した指定",
-                    );
-                    optional_text_field(
-                        ui,
-                        &mut profile.filter_title,
-                        "ウィンドウタイトル（filter_title）",
-                        "例: YouTube",
-                    );
-                    two_column_field(ui, "OS（filter_os）", "共有設定のOS限定", |ui| {
-                        ComboBox::from_id_salt("profile-filter-os")
-                            .selected_text(profile.filter_os.as_deref().unwrap_or("継承"))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut profile.filter_os, None, "継承");
-                                for value in ["linux", "macos", "windows"] {
-                                    ui.selectable_value(
-                                        &mut profile.filter_os,
-                                        Some(value.into()),
-                                        value,
-                                    );
-                                }
-                            });
-                    });
-                    if !profile.has_filter() {
-                        callout(
-                            ui,
-                            theme::AMBER,
-                            "アプリ別ファイルには filter_exec、filter_class、filter_title、filter_os のいずれかが必要です。",
-                        );
-                    }
-                }
-
-                ui.add_space(16.0);
-                ui.heading("動作と注入");
-                optional_bool_field(
-                    ui,
-                    &mut profile.enable,
-                    "Espansoを有効化",
-                    "未指定なら既定設定を継承",
-                );
-                two_column_field(ui, "注入方式（backend）", "auto / inject / clipboard", |ui| {
-                    ComboBox::from_id_salt("profile-backend")
-                        .selected_text(profile.backend.as_deref().unwrap_or("継承"))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut profile.backend, None, "継承");
-                            for (value, label) in [
-                                ("auto", "自動"),
-                                ("inject", "キー注入"),
-                                ("clipboard", "クリップボード"),
-                            ] {
-                                ui.selectable_value(
-                                    &mut profile.backend,
-                                    Some(value.into()),
-                                    label,
-                                );
-                            }
-                        });
-                });
-                optional_bool_field(
-                    ui,
-                    &mut profile.apply_patch,
-                    "組み込みpatchを適用",
-                    "terminal等へのEspanso既定補正",
-                );
-                optional_text_field(
-                    ui,
-                    &mut profile.paste_shortcut,
-                    "貼り付けshortcut",
-                    "例: CTRL+SHIFT+V",
-                );
-
-                ui.add_space(16.0);
-                ui.heading("遅延（ミリ秒）");
-                optional_number_field(ui, &mut profile.inject_delay, "文字注入間隔", "inject_delay");
-                optional_number_field(ui, &mut profile.key_delay, "キー注入間隔", "key_delay");
-                optional_number_field(
-                    ui,
-                    &mut profile.pre_paste_delay,
-                    "貼り付け前",
-                    "pre_paste_delay",
-                );
-                optional_number_field(
-                    ui,
-                    &mut profile.paste_shortcut_event_delay,
-                    "貼り付けキー間隔",
-                    "paste_shortcut_event_delay",
-                );
-                optional_number_field(
-                    ui,
-                    &mut profile.post_form_delay,
-                    "フォーム後",
-                    "post_form_delay",
-                );
-                optional_number_field(
-                    ui,
-                    &mut profile.post_search_delay,
-                    "検索後",
-                    "post_search_delay",
-                );
-
-                ui.add_space(16.0);
-                ui.heading("フォーム上限");
-                optional_number_field(
-                    ui,
-                    &mut profile.max_form_width,
-                    "最大幅（px）",
-                    "max_form_width",
-                );
-                optional_number_field(
-                    ui,
-                    &mut profile.max_form_height,
-                    "最大高（px）",
-                    "max_form_height",
-                );
-
-                if is_default {
-                    ui.add_space(16.0);
-                    ui.heading("検索と全体設定");
-                    optional_text_field(
-                        ui,
-                        &mut profile.search_shortcut,
-                        "検索shortcut",
-                        "例: ALT+SPACE / off",
-                    );
-                    optional_text_field(
-                        ui,
-                        &mut profile.search_trigger,
-                        "検索trigger",
-                        "例: .search / off",
-                    );
-                    optional_text_field(
-                        ui,
-                        &mut profile.toggle_key,
-                        "有効/無効toggle key",
-                        "例: RIGHT_CTRL / OFF",
-                    );
-                    optional_bool_field(
-                        ui,
-                        &mut profile.preserve_clipboard,
-                        "clipboardを復元",
-                        "展開前のclipboard内容を保持",
-                    );
-                    optional_bool_field(
-                        ui,
-                        &mut profile.show_icon,
-                        "status iconを表示",
-                        "macOS menu bar / Windows tray",
-                    );
-                    optional_bool_field(
-                        ui,
-                        &mut profile.show_notifications,
-                        "通知を表示",
-                        "Espansoの通知全体",
-                    );
-                }
-            });
+        profile_editor::visual_editor(ui, language, is_default, &mut profile);
 
         if profile != original {
             self.config_files[index].profile = profile;
             if let Err(error) = self.config_files[index].refresh_raw_from_profile() {
-                self.notify(MessageKind::Error, error.to_string());
+                self.notify_storage_error(error);
             }
         }
     }
 
     fn profile_raw_editor(&mut self, ui: &mut Ui, index: usize) {
+        let language = self.preferences.language;
         let apply_clicked = {
             let file = &mut self.config_files[index];
             if file.had_comments {
                 callout(
                     ui,
-                    theme::AMBER,
-                    "Raw YAML編集ではコメントを保持できます。ビジュアル編集の前にも元ファイルを自動バックアップします。",
+                    theme::palette(ui).amber,
+                    i18n::text(language, TextKey::ProfileRawYamlNotice),
                 );
             }
-            let changed = ui
-                .add(
-                    TextEdit::multiline(&mut file.raw_yaml)
-                        .font(FontId::new(14.0, FontFamily::Monospace))
-                        .desired_rows(30)
-                        .desired_width(f32::INFINITY),
-                )
+            let raw_yaml_label = ui.label(i18n::text(language, TextKey::RawYaml));
+            let changed = yaml_editor::editor(ui, &mut file.raw_yaml, 30)
+                .labelled_by(raw_yaml_label.id)
                 .changed();
             if changed {
                 file.dirty = true;
             }
-            ui.button("YAMLを検証して適用").clicked()
+            ui.button(i18n::text(language, TextKey::ValidateAndApplyYaml))
+                .clicked()
         };
         if apply_clicked {
             match self.config_files[index].apply_raw_yaml() {
-                Ok(()) => self.notify(MessageKind::Success, "YAMLは有効です"),
-                Err(error) => self.notify(MessageKind::Error, error.to_string()),
+                Ok(()) => self.notify(
+                    MessageKind::Success,
+                    i18n::text(language, TextKey::YamlValid),
+                ),
+                Err(error) => self.notify_storage_error(error),
             }
         }
     }
 
     fn globals_view(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(theme::PAPER)
-                    .inner_margin(Margin::same(24)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading("グローバル変数");
-                        ui.label("同じファイルと子ファイルのスニペットから利用できます。");
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("＋ 変数を追加").clicked() {
-                            self.variable_editor =
-                                Some(VariableEditor::new(VariableScope::Global, "echo"));
-                        }
-                    });
+        centered_content_panel(ui, "globals-scroll", |ui| {
+            let language = self.preferences.language;
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    display_heading(ui, i18n::text(language, TextKey::Globals));
+                    ui.label(i18n::text(language, TextKey::GlobalsDescription));
                 });
-                ui.separator();
-                let Some(file) = self.selected_file() else {
-                    centered_empty_state(
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .button(i18n::text(language, TextKey::AddVariable))
+                        .clicked()
+                    {
+                        self.variable_editor =
+                            Some(VariableEditor::new(VariableScope::Global, "echo", language));
+                    }
+                });
+            });
+            ui.separator();
+            let Some(file) = self.selected_file() else {
+                centered_empty_state(
+                    ui,
+                    i18n::text(language, TextKey::NoFileTitle),
+                    i18n::text(language, TextKey::SelectConfigFolderDescription),
+                );
+                return;
+            };
+            let variables = file.document.global_vars.clone();
+            let mut remove = None;
+            for (index, variable) in variables.iter().enumerate() {
+                Frame::group(ui.style()).show(ui, |ui| {
+                    responsive_detail_actions(
                         ui,
-                        "ファイルがありません",
-                        "設定フォルダを選択してください。",
-                    );
-                    return;
-                };
-                let variables = file.document.global_vars.clone();
-                let mut remove = None;
-                for (index, variable) in variables.iter().enumerate() {
-                    Frame::group(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        |ui| {
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(&variable.name).strong().size(17.0));
+                                ui.label(
+                                    RichText::new(&variable.name)
+                                        .strong()
+                                        .size(theme::TEXT_SECTION),
+                                );
                                 ui.label(
                                     RichText::new(format!(
                                         "{}  {}",
@@ -1873,268 +1894,219 @@ impl EspansoGuiApp {
                                         variable.token()
                                     ))
                                     .family(FontFamily::Monospace)
-                                    .color(theme::ACCENT),
+                                    .color(theme::palette(ui).accent),
                                 );
                             });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("削除").clicked() {
-                                    remove = Some(index);
-                                }
-                                if ui.small_button("編集").clicked() {
-                                    self.variable_editor = Some(VariableEditor {
-                                        scope: VariableScope::Global,
-                                        index: Some(index),
-                                        variable: variable.clone(),
-                                        insert_in_content: false,
-                                    });
-                                }
-                            });
-                        });
-                        variable_summary(ui, variable);
-                    });
-                    ui.add_space(8.0);
-                }
-                if let Some(index) = remove
-                    && let Some(file) = self.selected_file_mut()
-                    && !file.is_package
-                {
-                    file.document.global_vars.remove(index);
-                    self.mark_selected_file_changed();
-                }
-            });
+                        },
+                        |ui| {
+                            if context_row_button(
+                                ui,
+                                i18n::text(language, TextKey::Edit),
+                                &variable.name,
+                            )
+                            .clicked()
+                            {
+                                self.variable_editor = Some(VariableEditor {
+                                    scope: VariableScope::Global,
+                                    index: Some(index),
+                                    variable: variable.clone(),
+                                    insert_in_content: false,
+                                });
+                            }
+                            if context_row_button(
+                                ui,
+                                i18n::text(language, TextKey::Delete),
+                                &variable.name,
+                            )
+                            .clicked()
+                            {
+                                remove = Some(index);
+                            }
+                        },
+                    );
+                    variable_summary(ui, language, variable);
+                });
+                ui.add_space(theme::SPACE_SM);
+            }
+            if let Some(index) = remove
+                && let Some(file) = self.selected_file_mut()
+                && !file.is_package
+            {
+                file.document.global_vars.remove(index);
+                self.mark_selected_file_changed();
+            }
+        });
     }
 
     fn diagnostics_view(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(theme::PAPER)
-                    .inner_margin(Margin::same(24)),
-            )
-            .show(ui, |ui| {
-                ui.heading("設定診断");
-                ui.label("保存前にトリガー、変数参照、Espansoの基本構造を確認します。");
-                ui.separator();
-                let Some(file) = self.selected_file() else {
-                    return;
+        centered_content_panel(ui, "diagnostics-scroll", |ui| {
+            let language = self.preferences.language;
+            display_heading(ui, i18n::text(language, TextKey::DiagnosticsTitle));
+            ui.label(i18n::text(language, TextKey::DiagnosticsDescription));
+            ui.separator();
+            let Some(file) = self.selected_file() else {
+                return;
+            };
+            let diagnostics = file.document.diagnostics();
+            if diagnostics.is_empty() {
+                callout(
+                    ui,
+                    theme::palette(ui).accent,
+                    i18n::text(language, TextKey::NoProblems),
+                );
+                return;
+            }
+            for diagnostic in diagnostics {
+                let color = match diagnostic.level {
+                    DiagnosticLevel::Error => theme::palette(ui).danger,
+                    DiagnosticLevel::Warning => theme::palette(ui).amber,
                 };
-                let diagnostics = file.document.diagnostics();
-                if diagnostics.is_empty() {
-                    callout(
-                        ui,
-                        theme::ACCENT,
-                        "問題は見つかりませんでした。保存できます。",
-                    );
-                    return;
-                }
-                for diagnostic in diagnostics {
-                    let color = match diagnostic.level {
-                        DiagnosticLevel::Error => theme::DANGER,
-                        DiagnosticLevel::Warning => theme::AMBER,
-                    };
-                    Frame::group(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(match diagnostic.level {
-                                    DiagnosticLevel::Error => "エラー",
-                                    DiagnosticLevel::Warning => "警告",
-                                })
-                                .color(color)
-                                .strong(),
-                            );
-                            ui.label(&diagnostic.message);
-                            if let Some(index) = diagnostic.snippet_index {
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.small_button("開く").clicked() {
-                                        self.selected_snippet = index;
-                                        self.section = Section::Library;
-                                    }
-                                });
+                Frame::group(ui.style()).show(ui, |ui| {
+                    let diagnostic_text = i18n::diagnostic_text(language, &diagnostic.kind);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(match diagnostic.level {
+                                DiagnosticLevel::Error => i18n::text(language, TextKey::Error),
+                                DiagnosticLevel::Warning => i18n::text(language, TextKey::Warning),
+                            })
+                            .color(color)
+                            .strong(),
+                        );
+                        ui.label(&diagnostic_text);
+                    });
+                    if let Some(index) = diagnostic.snippet_index {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if context_row_button(
+                                ui,
+                                i18n::text(language, TextKey::Open),
+                                &diagnostic_text,
+                            )
+                            .clicked()
+                            {
+                                self.selected_snippet = index;
+                                self.section = Section::Library;
                             }
                         });
-                    });
-                    ui.add_space(6.0);
-                }
-            });
+                    }
+                });
+                ui.add_space(theme::SPACE_SM);
+            }
+        });
     }
 
     fn settings_view(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(Frame::new().fill(theme::PAPER).inner_margin(Margin::same(24)))
-            .show(ui, |ui| {
-                let language = self.preferences.language;
-                ui.heading(i18n::text(language, TextKey::Settings));
-                ui.separator();
-                ui.heading(i18n::text(language, TextKey::Accessibility));
-                two_column_field(
-                    ui,
-                    i18n::text(language, TextKey::Language),
-                    "日本語 / English",
-                    |ui| {
-                        ComboBox::from_id_salt("ui-language")
-                            .selected_text(self.preferences.language.native_name())
-                            .show_ui(ui, |ui| {
-                                for candidate in Language::ALL {
-                                    ui.selectable_value(
-                                        &mut self.preferences.language,
-                                        candidate,
-                                        candidate.native_name(),
-                                    );
-                                }
-                            });
-                    },
-                );
-                two_column_field(
-                    ui,
-                    i18n::text(self.preferences.language, TextKey::UiScale),
-                    "80%–200%",
-                    |ui| {
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.preferences.ui_scale, 0.8..=2.0)
-                                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                            )
-                            .changed()
-                        {
-                            ui.ctx().set_zoom_factor(self.preferences.ui_scale);
-                        }
-                    },
-                );
-                ui.label(
-                    RichText::new(i18n::text(
-                        self.preferences.language,
-                        TextKey::KeyboardShortcuts,
-                    ))
-                    .strong(),
-                );
-                callout(
-                    ui,
-                    theme::ACCENT,
-                    i18n::text(self.preferences.language, TextKey::ShortcutHelp),
-                );
-                ui.separator();
-                ui.heading("Espanso設定フォルダ");
-                ui.horizontal(|ui| {
-                    ui.add(
-                        TextEdit::singleline(
-                            &mut self.preferences.config_root.to_string_lossy().into_owned(),
-                        )
-                        .desired_width(580.0)
-                        .interactive(false),
+        centered_content_panel(ui, "settings-scroll", |ui| {
+            settings_editor::appearance_and_accessibility(ui, &mut self.preferences);
+            let language = self.preferences.language;
+            if let Some(action) =
+                settings_editor::config_folder(ui, language, &self.preferences.config_root)
+            {
+                self.handle_settings_action(action);
+            }
+            if let Some(action) = settings_editor::espanso_service(ui, language, &self.status) {
+                self.handle_settings_action(action);
+            }
+            let selected_file = self.selected_file();
+            let can_export = selected_file.is_some();
+            let can_modify = selected_file.is_some_and(|file| !file.is_package);
+            if let Some(action) = settings_editor::backup_and_migration(
+                ui,
+                language,
+                self.preferences.config_root.is_dir(),
+                can_export,
+                can_modify,
+            ) {
+                self.handle_settings_action(action);
+            }
+            ui.add_space(theme::SPACE_LG);
+            section_heading(ui, i18n::text(language, TextKey::HistoryTitle));
+            if let Some(relative) = self.selected_file().map(|file| file.relative_path.clone()) {
+                self.history_list(ui, &relative);
+            } else {
+                ui.label(i18n::text(language, TextKey::SelectHistoryFile));
+            }
+            if let Some(action) = settings_editor::delete_file_action(ui, language, can_modify) {
+                self.handle_settings_action(action);
+            }
+        });
+    }
+
+    fn handle_settings_action(&mut self, action: settings_editor::SettingsAction) {
+        let language = self.preferences.language;
+        match action {
+            settings_editor::SettingsAction::ChooseConfigRoot => self.choose_config_root(),
+            settings_editor::SettingsAction::OpenConfigRoot => {
+                if let Err(error) = open::that(&self.preferences.config_root) {
+                    self.notify(
+                        MessageKind::Error,
+                        i18n::open_failed_text(language, &error.to_string()),
                     );
-                    if ui.button("変更").clicked() {
-                        self.choose_config_root();
-                    }
-                    if ui.button("フォルダを開く").clicked()
-                        && let Err(error) = open::that(&self.preferences.config_root)
-                    {
-                        self.notify(MessageKind::Error, error.to_string());
-                    }
-                });
-                ui.add_space(14.0);
-                ui.heading("Espansoサービス");
-                ui.label(format!(
-                    "インストール: {}  /  バージョン: {}  /  状態: {}",
-                    if self.status.installed { "検出済み" } else { "未検出" },
-                    self.status.version.as_deref().unwrap_or("—"),
-                    self.status.service.as_deref().unwrap_or("—")
-                ));
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.status.installed, Button::new("開始"))
-                        .clicked()
-                    {
-                        self.run_espanso_action(EspansoAction::Start);
-                    }
-                    if ui
-                        .add_enabled(self.status.installed, Button::new("停止"))
-                        .clicked()
-                    {
-                        self.run_espanso_action(EspansoAction::Stop);
-                    }
-                    if ui
-                        .add_enabled(self.status.installed, Button::new("再起動"))
-                        .clicked()
-                    {
-                        self.run_espanso_action(EspansoAction::Restart);
-                    }
-                    if ui.button("状態を更新").clicked() {
-                        self.status = espanso::detect();
-                    }
-                });
-                ui.add_space(18.0);
-                ui.heading("バックアップとデータ移行");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("設定全体をバックアップ").clicked()
-                        && let Some(destination) = rfd::FileDialog::new()
-                            .set_title("バックアップ先を選択")
-                            .pick_folder()
-                    {
-                        match storage::create_backup_snapshot(
-                            &self.preferences.config_root,
-                            &destination,
-                        ) {
-                            Ok(path) => self.notify(
-                                MessageKind::Success,
-                                format!("バックアップを作成しました: {}", path.display()),
-                            ),
-                            Err(error) => self.notify(MessageKind::Error, error.to_string()),
-                        }
-                    }
-                    if ui.button("選択ファイルをCSVへ書き出す").clicked()
-                        && let Some(file) = self.selected_file()
-                        && let Some(destination) = rfd::FileDialog::new()
-                            .set_file_name(format!("{}.csv", file.display_name))
-                            .add_filter("CSV", &["csv"])
-                            .save_file()
-                    {
-                        match storage::export_csv(file, &destination) {
-                            Ok(()) => self.notify(MessageKind::Success, "CSVを書き出しました"),
-                            Err(error) => self.notify(MessageKind::Error, error.to_string()),
-                        }
-                    }
-                    if ui.button("CSVから読み込む").clicked()
-                        && let Some(source) = rfd::FileDialog::new()
-                            .add_filter("CSV", &["csv"])
-                            .pick_file()
-                        && let Some(file) = self.selected_file_mut()
-                    {
-                        match storage::import_csv(file, &source) {
-                            Ok(count) => self.notify(
-                                MessageKind::Success,
-                                format!("{count}件のスニペットを読み込みました（未保存）"),
-                            ),
-                            Err(error) => self.notify(MessageKind::Error, error.to_string()),
-                        }
-                    }
-                });
-                callout(
-                    ui,
-                    theme::ACCENT,
-                    "通常の保存でも変更前ファイルを .espanso-gui/backups に自動保存します。ファイル削除は .espanso-gui/trash へ退避します。",
-                );
-                ui.add_space(18.0);
-                ui.heading("選択ファイルの保存履歴");
-                if let Some(relative) = self
-                    .selected_file()
-                    .map(|file| file.relative_path.clone())
+                }
+            }
+            settings_editor::SettingsAction::Espanso(action) => self.run_espanso_action(action),
+            settings_editor::SettingsAction::RefreshStatus => self.status = espanso::detect(),
+            settings_editor::SettingsAction::BackupAll => {
+                if let Some(destination) = rfd::FileDialog::new()
+                    .set_title(i18n::text(language, TextKey::BackupDestination))
+                    .pick_folder()
                 {
-                    self.history_list(ui, &relative);
-                } else {
-                    ui.label("履歴を表示するスニペットファイルを選択してください。");
+                    match storage::create_backup_snapshot(
+                        &self.preferences.config_root,
+                        &destination,
+                    ) {
+                        Ok(path) => self.notify(
+                            MessageKind::Success,
+                            i18n::backup_created_text(language, &path.display().to_string()),
+                        ),
+                        Err(error) => self.notify_storage_error(error),
+                    }
                 }
-                ui.add_space(18.0);
-                ui.heading("ファイル操作");
-                if ui.button(RichText::new("選択中のファイルを削除…").color(theme::DANGER)).clicked() {
-                    self.pending_delete = Some(PendingDelete::File);
+            }
+            settings_editor::SettingsAction::ExportCsv => {
+                if let Some(file) = self.selected_file()
+                    && let Some(destination) = rfd::FileDialog::new()
+                        .set_file_name(format!("{}.csv", file.display_name))
+                        .add_filter("CSV", &["csv"])
+                        .save_file()
+                {
+                    match storage::export_csv(file, &destination) {
+                        Ok(()) => self.notify(
+                            MessageKind::Success,
+                            i18n::text(language, TextKey::CsvExported),
+                        ),
+                        Err(error) => self.notify_storage_error(error),
+                    }
                 }
-            });
+            }
+            settings_editor::SettingsAction::ImportCsv => {
+                if let Some(source) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .pick_file()
+                    && let Some(file) = self.selected_file_mut()
+                {
+                    match storage::import_csv(file, &source) {
+                        Ok(count) => self.notify(
+                            MessageKind::Success,
+                            i18n::csv_imported_text(language, count),
+                        ),
+                        Err(error) => self.notify_storage_error(error),
+                    }
+                }
+            }
+            settings_editor::SettingsAction::DeleteSelectedFile => {
+                self.pending_delete = Some(PendingDelete::File);
+            }
+        }
     }
 
     fn history_list(&mut self, ui: &mut Ui, relative_path: &Path) {
+        let language = self.preferences.language;
         match storage::list_history(&self.preferences.config_root, relative_path) {
             Ok(entries) if entries.is_empty() => {
-                ui.label(RichText::new("まだ履歴はありません").color(theme::MUTED));
+                ui.label(
+                    RichText::new(i18n::text(language, TextKey::NoHistory))
+                        .color(theme::palette(ui).muted),
+                );
             }
             Ok(entries) => {
                 let can_restore = !self.has_dirty_files();
@@ -2145,9 +2117,13 @@ impl EspansoGuiApp {
                                 .family(FontFamily::Monospace)
                                 .small(),
                         );
-                        if ui
-                            .add_enabled(can_restore, Button::new("この版を復元…"))
-                            .clicked()
+                        if context_button_enabled(
+                            ui,
+                            can_restore,
+                            i18n::text(language, TextKey::RestoreVersion),
+                            &entry.timestamp,
+                        )
+                        .clicked()
                         {
                             self.pending_restore = Some(PendingRestore {
                                 relative_path: relative_path.to_path_buf(),
@@ -2159,118 +2135,176 @@ impl EspansoGuiApp {
                 }
                 if !can_restore {
                     ui.label(
-                        RichText::new("未保存の変更があるため、履歴復元は一時的に無効です。")
+                        RichText::new(i18n::text(language, TextKey::HistoryDisabled))
                             .small()
-                            .color(theme::AMBER),
+                            .color(theme::palette(ui).amber),
                     );
                 }
             }
             Err(error) => {
-                ui.label(RichText::new(error.to_string()).color(theme::DANGER));
+                ui.label(
+                    RichText::new(i18n::storage_error_text(language, &error))
+                        .color(theme::palette(ui).danger),
+                );
             }
         }
     }
 
     fn about_view(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(Frame::new().fill(theme::PAPER).inner_margin(Margin::same(32)))
-            .show(ui, |ui| {
-                ui.heading("Espanso GUI");
-                ui.label(RichText::new("A polished visual editor for Espanso — written in Rust.").size(18.0));
-                ui.add_space(16.0);
-                ui.label("EspansoのYAML設定を、スニペット・変数・フォーム・リッチテキスト単位で安全に編集する独立アプリです。");
-                ui.add_space(12.0);
-                callout(
-                    ui,
-                    theme::AMBER,
-                    "非公式プロジェクトです。EspansoおよびEspanso開発者による承認・提携・サポートはありません。本アプリのIssueは本アプリのリポジトリだけで扱います。",
-                );
-                ui.add_space(12.0);
-                ui.label("ライセンス: MIT");
-                ui.label(format!("バージョン: {}", env!("CARGO_PKG_VERSION")));
-                ui.label("実装言語: Rust / GUI: eframe + egui");
-                ui.add_space(16.0);
-                if ui.link("Espanso公式ドキュメントを開く").clicked() {
-                    let _ = open::that("https://espanso.org/docs/");
-                }
-            });
+        centered_content_panel(ui, "about-scroll", |ui| {
+            let language = self.preferences.language;
+            display_heading(ui, "Espanso GUI");
+            ui.label(
+                RichText::new(i18n::text(language, TextKey::ProductTagline))
+                    .size(theme::TEXT_SECTION),
+            );
+            ui.add_space(theme::SPACE_LG);
+            ui.label(i18n::text(language, TextKey::AboutDescription));
+            ui.add_space(theme::SPACE_MD);
+            callout(
+                ui,
+                theme::palette(ui).amber,
+                i18n::text(language, TextKey::UnofficialNotice),
+            );
+            ui.add_space(theme::SPACE_MD);
+            ui.label(format!("{}: MIT", i18n::text(language, TextKey::License)));
+            ui.label(format!(
+                "{}: {}",
+                i18n::text(language, TextKey::Version),
+                env!("CARGO_PKG_VERSION")
+            ));
+            ui.label(i18n::text(language, TextKey::Implementation));
+            ui.add_space(theme::SPACE_LG);
+            if ui
+                .button(i18n::text(language, TextKey::OpenEspansoDocs))
+                .clicked()
+            {
+                self.open_espanso_documentation();
+            }
+        });
     }
 
     fn empty_workspace(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(theme::PAPER)
-                    .inner_margin(Margin::same(34)),
-            )
-            .show(ui, |ui| {
-                centered_empty_state(
+        centered_content_panel(ui, "empty-workspace-scroll", |ui| {
+            let language = self.preferences.language;
+            centered_empty_state(
+                ui,
+                i18n::text(language, TextKey::ConnectTitle),
+                i18n::text(language, TextKey::ConnectDescription),
+            );
+            ui.add_space(theme::SPACE_MD);
+            if !self.status.installed {
+                callout(
                     ui,
-                    "Espanso設定を接続しましょう",
-                    "設定フォルダを自動検出できない場合は手動で選択できます。",
+                    theme::palette(ui).amber,
+                    i18n::text(language, TextKey::EspansoInstallRequired),
                 );
-                ui.add_space(12.0);
+                ui.add_space(theme::SPACE_MD);
                 ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(self.preferences.config_root.display().to_string())
-                            .family(FontFamily::Monospace)
-                            .color(theme::MUTED),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("設定フォルダを選択").clicked() {
-                            self.choose_config_root();
-                        }
-                        if ui.button("この場所を初期化").clicked() {
-                            self.initialize_config();
-                        }
-                    });
-                    if let Some(error) = &self.load_error {
-                        ui.label(RichText::new(error).color(theme::DANGER));
+                    if ui
+                        .add(primary_button(
+                            ui,
+                            i18n::text(language, TextKey::OpenEspansoSetup),
+                        ))
+                        .clicked()
+                    {
+                        self.open_espanso_documentation();
                     }
                 });
+                ui.add_space(theme::SPACE_LG);
+            }
+            section_heading(ui, i18n::text(language, TextKey::ConfigLocation));
+            wrapped_path_label(ui, &self.preferences.config_root);
+            ui.label(
+                RichText::new(i18n::text(language, TextKey::InitializeHelp))
+                    .small()
+                    .color(theme::palette(ui).muted),
+            );
+            ui.add_space(theme::SPACE_MD);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(primary_button(
+                        ui,
+                        i18n::text(language, TextKey::ChooseConfigFolder),
+                    ))
+                    .clicked()
+                {
+                    self.choose_config_root();
+                }
+                if ui
+                    .button(i18n::text(language, TextKey::InitializeHere))
+                    .clicked()
+                {
+                    self.initialize_config();
+                }
             });
+            if let Some(error) = &self.load_error {
+                ui.add_space(theme::SPACE_MD);
+                callout(
+                    ui,
+                    theme::palette(ui).danger,
+                    &i18n::storage_error_text(language, error),
+                );
+            }
+        });
     }
 
     fn modal_windows(&mut self, ui: &mut Ui) {
-        self.new_file_window(ui);
-        self.new_config_window(ui);
-        self.variable_window(ui);
-        self.form_field_window(ui);
-        self.conflict_window(ui);
-        self.restore_confirmation(ui);
-        self.delete_confirmation(ui);
-        self.close_confirmation(ui);
+        // Render one modal at a time so focus ownership is deterministic even when, for example,
+        // an application-close request arrives while an editor dialog is already open.
+        if self.confirm_close {
+            self.close_confirmation(ui);
+        } else if self.conflict_dialog.is_some() {
+            self.conflict_window(ui);
+        } else if self.pending_restore.is_some() {
+            self.restore_confirmation(ui);
+        } else if self.pending_delete.is_some() {
+            self.delete_confirmation(ui);
+        } else if self.variable_editor.is_some() {
+            self.variable_window(ui);
+        } else if self.form_field_editor.is_some() {
+            self.form_field_window(ui);
+        } else if self.new_config_dialog {
+            self.new_config_window(ui);
+        } else if self.new_file_dialog {
+            self.new_file_window(ui);
+        }
     }
 
     fn new_file_window(&mut self, ui: &mut Ui) {
         if !self.new_file_dialog {
             return;
         }
-        let mut open = true;
         let mut create = false;
-        egui::Window::new("スニペットファイルを追加")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                ui.label("ファイル名");
-                ui.add(TextEdit::singleline(&mut self.new_file_name).hint_text("work"));
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "new-file",
+            i18n::text(language, TextKey::NewMatchFileTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_SM);
+                let file_name_label = ui.label(i18n::text(language, TextKey::FileName));
+                ui.add(singleline_text_edit(&mut self.new_file_name).hint_text("work"))
+                    .labelled_by(file_name_label.id);
                 ui.label(
-                    RichText::new("match/<名前>.yml として作成します")
+                    RichText::new(i18n::text(language, TextKey::NewMatchFileDescription))
                         .small()
-                        .color(theme::MUTED),
+                        .color(theme::palette(ui).muted),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("キャンセル").clicked() {
-                        self.new_file_dialog = false;
-                    }
-                    if ui.add(Button::new("作成").fill(theme::ACCENT)).clicked() {
+                modal_actions(ui, |ui| {
+                    if ui
+                        .add(primary_button(ui, i18n::text(language, TextKey::Create)))
+                        .clicked()
+                    {
                         create = true;
                     }
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                        self.new_file_dialog = false;
+                    }
                 });
-            });
-        if !open {
+            },
+        );
+        if dismissed {
             self.new_file_dialog = false;
         }
         if create {
@@ -2282,31 +2316,36 @@ impl EspansoGuiApp {
         if !self.new_config_dialog {
             return;
         }
-        let mut open = true;
         let mut create = false;
-        egui::Window::new("設定プロファイルを追加")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                ui.label("ファイル名");
-                ui.add(TextEdit::singleline(&mut self.new_config_name).hint_text("telegram"));
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "new-config",
+            i18n::text(language, TextKey::NewProfileTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_MD);
+                let file_name_label = ui.label(i18n::text(language, TextKey::FileName));
+                ui.add(singleline_text_edit(&mut self.new_config_name).hint_text("telegram"))
+                    .labelled_by(file_name_label.id);
                 ui.label(
-                    RichText::new("config/<名前>.yml として作成します。default は全体設定です。")
+                    RichText::new(i18n::text(language, TextKey::NewProfileDescription))
                         .small()
-                        .color(theme::MUTED),
+                        .color(theme::palette(ui).muted),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("キャンセル").clicked() {
-                        self.new_config_dialog = false;
-                    }
-                    if ui.add(Button::new("作成").fill(theme::ACCENT)).clicked() {
+                modal_actions(ui, |ui| {
+                    if ui
+                        .add(primary_button(ui, i18n::text(language, TextKey::Create)))
+                        .clicked()
+                    {
                         create = true;
                     }
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                        self.new_config_dialog = false;
+                    }
                 });
-            });
-        if !open {
+            },
+        );
+        if dismissed {
             self.new_config_dialog = false;
         }
         if create {
@@ -2318,41 +2357,42 @@ impl EspansoGuiApp {
         let Some(mut dialog) = self.conflict_dialog.take() else {
             return;
         };
-        let mut open = true;
         let mut apply = false;
         let mut cancel = false;
-        egui::Window::new("外部変更をthree-way merge")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([760.0, 560.0])
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "conflict-resolution",
+            i18n::text(language, TextKey::ConflictTitle),
+            |ui| {
+                set_responsive_modal_size(ui, theme::MODAL_WIDTH_WIDE, theme::MODAL_HEIGHT_TALL);
                 callout(
                     ui,
-                    theme::AMBER,
-                    "読み込み時点（base）、編集中（local）、現在のdiskを比較しました。保存前にdisk最新版も自動バックアップします。",
+                    theme::palette(ui).amber,
+                    i18n::text(language, TextKey::ConflictIntroduction),
                 );
-                ui.add_space(8.0);
+                ui.add_space(theme::SPACE_SM);
                 if dialog.conflict.plan.conflicts.is_empty() {
                     callout(
                         ui,
-                        theme::ACCENT,
-                        "同じfieldを双方が変更した箇所はありません。独立した変更を自動mergeできます。",
+                        theme::palette(ui).accent,
+                        i18n::text(language, TextKey::NoOverlappingChanges),
                     );
                 } else {
-                    ui.label(format!(
-                        "{} fieldで双方の変更が重なっています。各fieldの採用値を選択してください。",
-                        dialog.conflict.plan.conflicts.len()
+                    ui.label(i18n::conflict_count_text(
+                        language,
+                        dialog.conflict.plan.conflicts.len(),
                     ));
                     ui.separator();
                     ScrollArea::vertical()
                         .id_salt("conflict-fields")
-                        .max_height(390.0)
+                        .max_height(ui.available_height().min(theme::CONFLICT_LIST_MAX_HEIGHT))
                         .show(ui, |ui| {
                             for (index, conflict) in
                                 dialog.conflict.plan.conflicts.iter().enumerate()
                             {
+                                let missing = i18n::text(language, TextKey::DeletedValue);
+                                let unavailable = i18n::text(language, TextKey::UnavailableValue);
                                 Frame::group(ui.style()).show(ui, |ui| {
                                     ui.label(
                                         RichText::new(&conflict.label)
@@ -2361,56 +2401,61 @@ impl EspansoGuiApp {
                                     );
                                     ui.label(
                                         RichText::new(format!(
-                                            "base: {}",
-                                            conflict.base_summary()
+                                            "{}: {}",
+                                            i18n::text(language, TextKey::BaseValue),
+                                            conflict.base_summary(missing, unavailable)
                                         ))
                                         .small()
-                                        .color(theme::MUTED),
+                                        .color(theme::palette(ui).muted),
                                     );
                                     ui.horizontal(|ui| {
-                                        ui.selectable_value(
+                                        context_selectable_value(
+                                            ui,
                                             &mut dialog.choices[index],
                                             ResolutionChoice::Local,
-                                            "localを採用",
+                                            i18n::text(language, TextKey::UseLocal),
+                                            &conflict.label,
                                         );
-                                        ui.code(conflict.local_summary());
+                                        ui.code(conflict.local_summary(missing, unavailable));
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.selectable_value(
+                                        context_selectable_value(
+                                            ui,
                                             &mut dialog.choices[index],
                                             ResolutionChoice::Disk,
-                                            "diskを採用",
+                                            i18n::text(language, TextKey::UseDisk),
+                                            &conflict.label,
                                         );
-                                        ui.code(conflict.disk_summary());
+                                        ui.code(conflict.disk_summary(missing, unavailable));
                                     });
                                 });
-                                ui.add_space(8.0);
+                                ui.add_space(theme::SPACE_SM);
                             }
                         });
                 }
                 ui.separator();
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                modal_actions(ui, |ui| {
                     if ui
-                        .add(Button::new("mergeして保存").fill(theme::ACCENT))
+                        .add(primary_button(
+                            ui,
+                            i18n::text(language, TextKey::MergeAndSave),
+                        ))
                         .clicked()
                     {
                         apply = true;
                     }
-                    if ui.button("キャンセル").clicked() {
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
                         cancel = true;
                     }
                 });
-            });
+            },
+        );
 
         if apply {
             let root = self.preferences.config_root.clone();
             let result = match dialog.target {
                 ConflictTarget::Match(index) => self.files.get_mut(index).map_or_else(
-                    || {
-                        Err(storage::StorageError::Message(
-                            "対象ファイルがありません".into(),
-                        ))
-                    },
+                    || Err(storage::StorageIssue::MissingTargetFile.into()),
                     |file| {
                         storage::resolve_workspace_conflict(
                             &root,
@@ -2421,11 +2466,7 @@ impl EspansoGuiApp {
                     },
                 ),
                 ConflictTarget::Config(index) => self.config_files.get_mut(index).map_or_else(
-                    || {
-                        Err(storage::StorageError::Message(
-                            "対象ファイルがありません".into(),
-                        ))
-                    },
+                    || Err(storage::StorageIssue::MissingTargetFile.into()),
                     |file| {
                         storage::resolve_config_conflict(
                             &root,
@@ -2439,11 +2480,11 @@ impl EspansoGuiApp {
             match result {
                 Ok(receipt) => self.notify(
                     MessageKind::Success,
-                    format!("three-way mergeを保存しました / {}", &receipt.hash[..8]),
+                    i18n::merge_saved_text(language, &receipt.hash[..8]),
                 ),
-                Err(error) => self.notify(MessageKind::Error, error.to_string()),
+                Err(error) => self.notify_storage_error(error),
             }
-        } else if open && !cancel {
+        } else if !dismissed && !cancel {
             self.conflict_dialog = Some(dialog);
         }
     }
@@ -2452,37 +2493,41 @@ impl EspansoGuiApp {
         let Some(pending) = self.pending_restore.clone() else {
             return;
         };
-        let mut open = true;
         let mut restore = false;
         let mut cancel = false;
-        egui::Window::new("保存履歴を復元")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
-                    "{} を {} の内容へ戻します。",
-                    pending.relative_path.display(),
-                    pending.timestamp
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "restore-history",
+            i18n::text(language, TextKey::RestoreHistoryTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_LG);
+                ui.label(i18n::restore_target_text(
+                    language,
+                    &pending.relative_path.display().to_string(),
+                    &pending.timestamp,
                 ));
                 callout(
                     ui,
-                    theme::AMBER,
-                    "現在のdisk版も先に新しい履歴としてbackupするため、復元操作自体を取り消せます。",
+                    theme::palette(ui).amber,
+                    i18n::text(language, TextKey::RestoreWarning),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("キャンセル").clicked() {
-                        cancel = true;
-                    }
+                modal_actions(ui, |ui| {
                     if ui
-                        .add(Button::new("backupして復元").fill(theme::ACCENT))
+                        .add(primary_button(
+                            ui,
+                            i18n::text(language, TextKey::BackupAndRestore),
+                        ))
                         .clicked()
                     {
                         restore = true;
                     }
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                        cancel = true;
+                    }
                 });
-            });
+            },
+        );
         if restore {
             match storage::restore_history(
                 &self.preferences.config_root,
@@ -2492,14 +2537,17 @@ impl EspansoGuiApp {
                 Ok(_) => {
                     self.pending_restore = None;
                     self.reload_workspace();
-                    self.notify(MessageKind::Success, "保存履歴から復元しました");
+                    self.notify(
+                        MessageKind::Success,
+                        i18n::text(language, TextKey::RestoreComplete),
+                    );
                 }
                 Err(error) => {
                     self.pending_restore = None;
-                    self.notify(MessageKind::Error, error.to_string());
+                    self.notify_storage_error(error);
                 }
             }
-        } else if cancel || !open {
+        } else if cancel || dismissed {
             self.pending_restore = None;
         }
     }
@@ -2508,32 +2556,31 @@ impl EspansoGuiApp {
         let Some(mut editor) = self.variable_editor.take() else {
             return;
         };
-        let mut open = true;
         let mut save = false;
         let mut cancel = false;
-        egui::Window::new(if editor.index.is_some() {
-            "変数を編集"
+        let language = self.preferences.language;
+        let title = if editor.index.is_some() {
+            i18n::text(language, TextKey::EditVariableTitle)
         } else {
-            "変数を追加"
-        })
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_width(560.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ui.ctx(), |ui| {
-            ui.horizontal(|ui| {
+            i18n::text(language, TextKey::AddVariableTitle)
+        };
+        let dismissed = show_modal(ui, "variable-editor", title, |ui| {
+            set_responsive_modal_width(ui, theme::MODAL_WIDTH_XL);
+            ui.horizontal_wrapped(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("変数名").strong());
+                    let name_label = ui
+                        .label(RichText::new(i18n::text(language, TextKey::VariableName)).strong());
                     ui.add(
-                        TextEdit::singleline(&mut editor.variable.name).hint_text("my_variable"),
-                    );
+                        singleline_text_edit(&mut editor.variable.name).hint_text("my_variable"),
+                    )
+                    .labelled_by(name_label.id);
                 });
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("種類").strong());
+                    let kind_label =
+                        ui.label(RichText::new(i18n::text(language, TextKey::Kind)).strong());
                     let old_kind = editor.variable.kind.clone();
-                    ComboBox::from_id_salt("variable-kind")
-                        .selected_text(variable_kind_label(&editor.variable.kind))
+                    let kind_response = ComboBox::from_id_salt("variable-kind")
+                        .selected_text(i18n::variable_kind_label(language, &editor.variable.kind))
                         .show_ui(ui, |ui| {
                             for kind in [
                                 "date",
@@ -2549,28 +2596,30 @@ impl EspansoGuiApp {
                                 ui.selectable_value(
                                     &mut editor.variable.kind,
                                     kind.into(),
-                                    variable_kind_label(kind),
+                                    i18n::variable_kind_label(language, kind),
                                 );
                             }
                         });
+                    kind_response.response.labelled_by(kind_label.id);
                     if editor.variable.kind != old_kind {
                         let name = editor.variable.name.clone();
-                        editor.variable = Variable::new(&editor.variable.kind);
+                        editor.variable = localized_new_variable(language, &editor.variable.kind);
                         editor.variable.name = name;
                     }
                 });
             });
             ui.separator();
-            variable_parameters(ui, &mut editor.variable);
+            variable_parameters(ui, language, &mut editor.variable);
             ui.separator();
             let mut dependencies = editor.variable.depends_on.join(", ");
-            two_column_field(
+            labelled_two_column_field(
                 ui,
-                "依存変数",
-                "評価順を固定する場合だけ指定",
-                |ui| {
+                i18n::text(language, TextKey::Dependencies),
+                i18n::text(language, TextKey::DependenciesDescription),
+                |ui, label_id| {
                     if ui
-                        .add(TextEdit::singleline(&mut dependencies).hint_text("first, second"))
+                        .add(singleline_text_edit(&mut dependencies).hint_text("first, second"))
+                        .labelled_by(label_id)
                         .changed()
                     {
                         editor.variable.depends_on = dependencies
@@ -2585,18 +2634,21 @@ impl EspansoGuiApp {
             if editor.scope == VariableScope::Local {
                 ui.checkbox(
                     &mut editor.insert_in_content,
-                    "保存時に本文へ {{変数名}} を挿入",
+                    i18n::text(language, TextKey::InsertVariableToken),
                 );
             }
-            ui.horizontal(|ui| {
-                if ui.button("キャンセル").clicked() {
-                    cancel = true;
-                }
+            modal_actions(ui, |ui| {
                 if ui
-                    .add(Button::new("変数を保存").fill(theme::ACCENT))
+                    .add(primary_button(
+                        ui,
+                        i18n::text(language, TextKey::SaveVariable),
+                    ))
                     .clicked()
                 {
                     save = true;
+                }
+                if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                    cancel = true;
                 }
             });
         });
@@ -2610,13 +2662,13 @@ impl EspansoGuiApp {
             {
                 self.notify(
                     MessageKind::Error,
-                    "変数名には英数字とアンダースコアだけを使用してください",
+                    i18n::text(language, TextKey::InvalidVariableName),
                 );
                 self.variable_editor = Some(editor);
                 return;
             }
             self.apply_variable_editor(editor);
-        } else if open && !cancel {
+        } else if !dismissed && !cancel {
             self.variable_editor = Some(editor);
         }
     }
@@ -2659,7 +2711,7 @@ impl EspansoGuiApp {
         self.mark_selected_file_changed();
         self.notify(
             MessageKind::Success,
-            "変数を保存しました（ファイルは未保存）",
+            i18n::text(self.preferences.language, TextKey::VariableSaved),
         );
     }
 
@@ -2667,54 +2719,66 @@ impl EspansoGuiApp {
         let Some(mut editor) = self.form_field_editor.take() else {
             return;
         };
-        let mut open = true;
         let mut save = false;
         let mut cancel = false;
-        egui::Window::new("フォーム項目")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(500.0)
-            .show(ui.ctx(), |ui| {
-                ui.label("項目名（[[name]] のname部分）");
-                ui.add(TextEdit::singleline(&mut editor.name));
-                let mut kind = form_field_kind(&editor.field);
-                ui.label("入力タイプ");
-                ComboBox::from_id_salt("form-field-kind")
-                    .selected_text(&kind)
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "form-field-editor",
+            i18n::text(language, TextKey::FormFieldTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_LG);
+                let name_label = ui.label(i18n::text(language, TextKey::FieldName));
+                ui.add(singleline_text_edit(&mut editor.name))
+                    .labelled_by(name_label.id);
+                let original_kind = editor.field.kind();
+                let mut kind = original_kind.clone();
+                let kind_label = ui.label(i18n::text(language, TextKey::InputType));
+                let kind_response = ComboBox::from_id_salt("form-field-kind")
+                    .selected_text(i18n::form_field_kind_label(language, &kind))
                     .show_ui(ui, |ui| {
-                        for candidate in ["text", "multiline", "choice", "list"] {
-                            ui.selectable_value(&mut kind, candidate.into(), candidate);
+                        for candidate in FormFieldKind::ALL {
+                            let label = i18n::form_field_kind_label(language, &candidate);
+                            ui.selectable_value(&mut kind, candidate, label);
                         }
                     });
-                set_form_field_kind(&mut editor.field, &kind);
-                ui.label("初期値");
+                kind_response.response.labelled_by(kind_label.id);
+                if kind != original_kind {
+                    editor.field.set_kind(&kind);
+                }
+                let initial_value_label = ui.label(i18n::text(language, TextKey::InitialValue));
                 let mut default = editor.field.default.clone().unwrap_or_default();
-                if ui.add(TextEdit::singleline(&mut default)).changed() {
+                if ui
+                    .add(singleline_text_edit(&mut default))
+                    .labelled_by(initial_value_label.id)
+                    .changed()
+                {
                     editor.field.default = (!default.is_empty()).then_some(default);
                 }
-                if matches!(kind.as_str(), "choice" | "list") {
-                    ui.label("選択肢（1行に1つ）");
+                if matches!(kind, FormFieldKind::Choice | FormFieldKind::List) {
+                    let choices_label = ui.label(i18n::text(language, TextKey::ChoicesPerLine));
                     let mut values = editor.field.values.join("\n");
                     if ui
-                        .add(TextEdit::multiline(&mut values).desired_rows(6))
+                        .add(multiline_text_edit(&mut values).desired_rows(6))
+                        .labelled_by(choices_label.id)
                         .changed()
                     {
                         editor.field.values = values.lines().map(str::to_string).collect();
                     }
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("キャンセル").clicked() {
-                        cancel = true;
-                    }
+                modal_actions(ui, |ui| {
                     if ui
-                        .add(Button::new("項目を保存").fill(theme::ACCENT))
+                        .add(primary_button(ui, i18n::text(language, TextKey::SaveField)))
                         .clicked()
                     {
                         save = true;
                     }
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                        cancel = true;
+                    }
                 });
-            });
+            },
+        );
         if save {
             let name = editor.name.trim().to_string();
             if name.is_empty()
@@ -2724,7 +2788,7 @@ impl EspansoGuiApp {
             {
                 self.notify(
                     MessageKind::Error,
-                    "項目名には英数字とアンダースコアだけを使用してください",
+                    i18n::text(language, TextKey::InvalidFieldName),
                 );
                 self.form_field_editor = Some(editor);
                 return;
@@ -2752,7 +2816,7 @@ impl EspansoGuiApp {
                 }
                 self.mark_selected_file_changed();
             }
-        } else if open && !cancel {
+        } else if !dismissed && !cancel {
             self.form_field_editor = Some(editor);
         }
     }
@@ -2762,25 +2826,26 @@ impl EspansoGuiApp {
             return;
         };
         let mut keep_open = true;
-        egui::Window::new("削除の確認")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                ui.label(match pending {
-                    PendingDelete::Snippet => {
-                        "選択したスニペットを削除しますか？保存前なら再読み込みで戻せます。"
-                    }
-                    PendingDelete::File => {
-                        "選択したファイルを削除しますか？ファイルは復元用フォルダへ移動されます。"
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("キャンセル").clicked() {
-                        keep_open = false;
-                    }
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "delete-confirmation",
+            i18n::text(language, TextKey::DeleteConfirmationTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_MD);
+                ui.label(i18n::text(
+                    language,
+                    match pending {
+                        PendingDelete::Snippet => TextKey::DeleteSnippetQuestion,
+                        PendingDelete::File => TextKey::DeleteFileQuestion,
+                    },
+                ));
+                modal_actions(ui, |ui| {
                     if ui
-                        .add(Button::new("削除する").fill(theme::DANGER))
+                        .add(danger_button(
+                            ui,
+                            i18n::text(language, TextKey::ConfirmDelete),
+                        ))
                         .clicked()
                     {
                         match pending {
@@ -2789,9 +2854,13 @@ impl EspansoGuiApp {
                         }
                         keep_open = false;
                     }
+                    if ui.button(i18n::text(language, TextKey::Cancel)).clicked() {
+                        keep_open = false;
+                    }
                 });
-            });
-        if !keep_open {
+            },
+        );
+        if !keep_open || dismissed {
             self.pending_delete = None;
         }
     }
@@ -2800,18 +2869,20 @@ impl EspansoGuiApp {
         if !self.confirm_close {
             return;
         }
-        egui::Window::new("未保存の変更があります")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                ui.label("保存していない変更を破棄して終了しますか？");
-                ui.horizontal(|ui| {
-                    if ui.button("編集に戻る").clicked() {
-                        self.confirm_close = false;
-                    }
+        let language = self.preferences.language;
+        let dismissed = show_modal(
+            ui,
+            "close-confirmation",
+            i18n::text(language, TextKey::UnsavedChangesTitle),
+            |ui| {
+                set_responsive_modal_width(ui, theme::MODAL_WIDTH_MD);
+                ui.label(i18n::text(language, TextKey::DiscardChangesQuestion));
+                modal_actions(ui, |ui| {
                     if ui
-                        .add(Button::new("破棄して終了").fill(theme::DANGER))
+                        .add(danger_button(
+                            ui,
+                            i18n::text(language, TextKey::DiscardAndExit),
+                        ))
                         .clicked()
                     {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2820,13 +2891,27 @@ impl EspansoGuiApp {
                             file.dirty = false;
                         }
                     }
+                    if ui
+                        .button(i18n::text(language, TextKey::ReturnToEditor))
+                        .clicked()
+                    {
+                        self.confirm_close = false;
+                    }
                 });
-            });
+            },
+        );
+        if dismissed {
+            self.confirm_close = false;
+        }
     }
 }
 
-impl eframe::App for EspansoGuiApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+impl EspansoGuiApp {
+    fn render(&mut self, ui: &mut Ui) {
+        ui.ctx()
+            .accesskit_node_builder(egui::accesskit_root_id(), |node| {
+                node.set_label("Espanso GUI");
+            });
         self.keyboard_shortcuts(ui);
         let close_requested = ui.ctx().input(|input| input.viewport().close_requested());
         if close_requested && self.has_dirty_files() && !self.confirm_close {
@@ -2836,7 +2921,7 @@ impl eframe::App for EspansoGuiApp {
         }
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(theme::PAPER))
+            .frame(Frame::new().fill(theme::palette(ui).paper))
             .show(ui, |ui| {
                 self.top_bar(ui);
                 self.navigation(ui);
@@ -2854,723 +2939,1387 @@ impl eframe::App for EspansoGuiApp {
                 self.modal_windows(ui);
             });
     }
+}
+
+impl eframe::App for EspansoGuiApp {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.render(ui);
+    }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, APP_STORAGE_KEY, &self.preferences);
     }
 }
 
-fn status_badge(ui: &mut Ui, status: &EspansoStatus, language: Language) {
-    let (text, color) = if status.installed {
-        (i18n::text(language, TextKey::Connected), theme::ACCENT)
-    } else {
-        (i18n::text(language, TextKey::NotDetected), theme::AMBER)
-    };
-    Frame::new()
-        .fill(color.gamma_multiply(0.12))
-        .corner_radius(10)
-        .inner_margin(Margin::symmetric(9, 4))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(format!("●  {text}"))
-                    .small()
-                    .color(color)
-                    .strong(),
-            );
-        });
-}
-
-fn nav_button(ui: &mut Ui, current: &mut Section, value: Section, label: &str, shortcut: &str) {
-    let selected = *current == value;
-    let response = ui.add_sized(
-        [190.0, 38.0],
-        Button::new(format!("{label}                         {shortcut}"))
-            .selected(selected)
-            .frame(selected),
-    );
-    if response.clicked() {
-        *current = value;
-    }
-}
-
 fn tab_button(ui: &mut Ui, current: &mut EditorTab, value: EditorTab, label: &str) {
-    if ui.selectable_label(*current == value, label).clicked() {
-        *current = value;
-    }
+    let _ = unambiguous_selectable_value(ui, current, value, label);
 }
 
-fn two_column_field(ui: &mut Ui, label: &str, description: &str, content: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(50.0);
-        ui.vertical(|ui| {
-            ui.set_width(190.0);
-            ui.label(RichText::new(label).strong());
-            ui.label(RichText::new(description).small().color(theme::MUTED));
-        });
-        ui.vertical(content);
-    });
-}
-
-fn optional_text_field(ui: &mut Ui, value: &mut Option<String>, label: &str, description: &str) {
-    two_column_field(ui, label, description, |ui| {
-        let mut overridden = value.is_some();
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut overridden, "上書き").changed() {
-                if overridden {
-                    *value = Some(String::new());
-                } else {
-                    *value = None;
-                }
-            }
-            ui.add_enabled_ui(overridden, |ui| {
-                if let Some(value) = value {
-                    ui.add(TextEdit::singleline(value).desired_width(320.0));
-                }
-            });
-        });
-    });
-}
-
-fn optional_number_field(ui: &mut Ui, value: &mut Option<u64>, label: &str, description: &str) {
-    two_column_field(ui, label, description, |ui| {
-        let mut overridden = value.is_some();
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut overridden, "上書き").changed() {
-                if overridden {
-                    *value = Some(0);
-                } else {
-                    *value = None;
-                }
-            }
-            ui.add_enabled_ui(overridden, |ui| {
-                if let Some(value) = value {
-                    ui.add(egui::DragValue::new(value).range(0..=60_000));
-                }
-            });
-        });
-    });
-}
-
-fn optional_bool_field(ui: &mut Ui, value: &mut Option<bool>, label: &str, description: &str) {
-    two_column_field(ui, label, description, |ui| {
-        ComboBox::from_id_salt(("optional-bool", label))
-            .selected_text(match value {
-                None => "継承",
-                Some(true) => "有効",
-                Some(false) => "無効",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(value, None, "継承");
-                ui.selectable_value(value, Some(true), "有効");
-                ui.selectable_value(value, Some(false), "無効");
-            });
-    });
-}
-
-fn option_checkbox(ui: &mut Ui, value: &mut Option<bool>, label: &str, description: &str) {
+fn option_checkbox(
+    ui: &mut Ui,
+    language: Language,
+    value: &mut Option<bool>,
+    label: &str,
+    description: &str,
+) {
     let mut enabled = value.unwrap_or(false);
-    two_column_field(ui, label, description, |ui| {
-        if ui.checkbox(&mut enabled, "有効").changed() {
+    labelled_two_column_field(ui, label, description, |ui, label_id| {
+        if ui
+            .checkbox(&mut enabled, i18n::text(language, TextKey::Enabled))
+            .labelled_by(label_id)
+            .changed()
+        {
             *value = enabled.then_some(true);
         }
     });
 }
 
-#[derive(Debug, Clone, Copy)]
-enum HtmlCommand {
-    Bold,
-    Italic,
-    Heading,
-    Link,
-    UnorderedList,
-    OrderedList,
-    Color,
-    Image,
-}
-
-fn html_fragment(command: HtmlCommand) -> &'static str {
-    match command {
-        HtmlCommand::Bold => "<strong>太字</strong>",
-        HtmlCommand::Italic => "<em>斜体</em>",
-        HtmlCommand::Heading => "<h2>見出し</h2>",
-        HtmlCommand::Link => "<a href=\"https://example.com\">リンク</a>",
-        HtmlCommand::UnorderedList => "<ul><li>項目1</li><li>項目2</li></ul>",
-        HtmlCommand::OrderedList => "<ol><li>項目1</li><li>項目2</li></ol>",
-        HtmlCommand::Color => "<span style=\"color: #197966\">色付きテキスト</span>",
-        HtmlCommand::Image => "<img src=\"$CONFIG/assets/image.png\" alt=\"画像\">",
-    }
-}
-
-fn safe_html_preview(html: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let mut output = String::new();
-    let mut position = 0;
-    while position < html.len() {
-        let Some(relative_start) = html[position..].find('<') else {
-            output.push_str(&decode_html_entities(&html[position..]));
-            break;
-        };
-        let start = position + relative_start;
-        output.push_str(&decode_html_entities(&html[position..start]));
-        let Some(relative_end) = html[start..].find('>') else {
-            output.push_str(&decode_html_entities(&html[start..]));
-            break;
-        };
-        let end = start + relative_end;
-        let tag = lower[start + 1..end].trim();
-        if tag.starts_with("script") || tag.starts_with("style") {
-            let closing = if tag.starts_with("script") {
-                "</script"
-            } else {
-                "</style"
-            };
-            let Some(close_start) = lower[end + 1..].find(closing) else {
-                break;
-            };
-            let close_start = end + 1 + close_start;
-            let Some(close_end) = html[close_start..].find('>') else {
-                break;
-            };
-            position = close_start + close_end + 1;
-            continue;
-        }
-        if tag.starts_with("img") {
-            output.push_str("[画像]");
-        } else if tag == "br" || tag == "br/" || is_html_block_boundary(tag) {
-            if !output.ends_with('\n') {
-                output.push('\n');
-            }
-            if tag.starts_with("li") {
-                output.push_str("• ");
-            }
-        }
-        position = end + 1;
-    }
-    output
-        .lines()
-        .map(str::trim_end)
-        .fold(String::new(), |mut preview, line| {
-            if !preview.is_empty() {
-                preview.push('\n');
-            }
-            preview.push_str(line);
-            preview
-        })
-        .trim()
-        .to_string()
-}
-
-fn is_html_block_boundary(tag: &str) -> bool {
-    [
-        "p", "/p", "div", "/div", "h1", "/h1", "h2", "/h2", "h3", "/h3", "ul", "/ul", "ol", "/ol",
-        "li", "/li",
-    ]
-    .contains(&tag)
-}
-
-fn decode_html_entities(text: &str) -> String {
-    text.replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
-}
-
-fn editor_toolbar(ui: &mut Ui, snippet: &mut Snippet) {
-    ui.horizontal_wrapped(|ui| {
-        if matches!(snippet.content_kind(), ContentKind::Markdown) {
-            if ui.small_button("太字").clicked() {
-                snippet.insert_token("**太字**");
-            }
-            if ui.small_button("斜体").clicked() {
-                snippet.insert_token("*斜体*");
-            }
-            if ui.small_button("リンク").clicked() {
-                snippet.insert_token("[リンク](https://example.com)");
-            }
-            if ui.small_button("コード").clicked() {
-                snippet.insert_token("`code`");
-            }
-            if ui.small_button("箇条書き").clicked() {
-                snippet.insert_token("\n- 項目1\n- 項目2");
-            }
-        } else if matches!(snippet.content_kind(), ContentKind::Html) {
-            for (label, command) in [
-                ("太字", HtmlCommand::Bold),
-                ("斜体", HtmlCommand::Italic),
-                ("見出し", HtmlCommand::Heading),
-                ("リンク", HtmlCommand::Link),
-                ("箇条書き", HtmlCommand::UnorderedList),
-                ("番号リスト", HtmlCommand::OrderedList),
-                ("色", HtmlCommand::Color),
-                ("画像", HtmlCommand::Image),
-            ] {
-                if ui.small_button(label).clicked() {
-                    snippet.insert_token(html_fragment(command));
-                }
-            }
-        }
-        if !matches!(snippet.content_kind(), ContentKind::Image)
-            && ui.small_button("カーソル位置").clicked()
-        {
-            snippet.insert_token("$|$");
-        }
-        for variable in &snippet.vars.clone() {
-            if ui.small_button(variable.token()).clicked() {
-                snippet.insert_token(&variable.token());
-            }
-        }
-    });
-}
-
-fn variable_parameters(ui: &mut Ui, variable: &mut Variable) {
-    match variable.kind.as_str() {
-        "date" => {
-            let mut format = variable.param_str("format");
-            two_column_field(ui, "表示形式", "strftime形式", |ui| {
-                ComboBox::from_id_salt("date-format-presets")
-                    .selected_text(if format.is_empty() {
-                        "形式を選択"
-                    } else {
-                        &format
-                    })
-                    .show_ui(ui, |ui| {
-                        for (value, label) in [
-                            ("%Y-%m-%d", "2026-08-15"),
-                            ("%Y年%m月%d日", "2026年08月15日"),
-                            ("%Y/%m/%d", "2026/08/15"),
-                            ("%H:%M", "14:30"),
-                            ("%Y-%m-%d %H:%M", "日時"),
-                        ] {
-                            ui.selectable_value(
-                                &mut format,
-                                value.into(),
-                                format!("{label}  ({value})"),
-                            );
-                        }
-                    });
-                ui.add(TextEdit::singleline(&mut format).hint_text("%Y-%m-%d"));
-            });
-            variable.set_param("format", format);
-            let mut offset = variable.param_i64("offset");
-            two_column_field(ui, "日時の移動", "秒単位。明日は86400", |ui| {
-                ui.horizontal(|ui| {
-                    if ui.small_button("昨日").clicked() {
-                        offset = -86_400;
-                    }
-                    if ui.small_button("今日").clicked() {
-                        offset = 0;
-                    }
-                    if ui.small_button("明日").clicked() {
-                        offset = 86_400;
-                    }
-                    if ui.small_button("1週間後").clicked() {
-                        offset = 604_800;
-                    }
-                });
-                ui.add(egui::DragValue::new(&mut offset).speed(60).suffix(" 秒"));
-            });
-            variable.set_i64("offset", offset, true);
-            let mut locale = variable.param_str("locale");
-            two_column_field(ui, "ロケール", "BCP 47。空欄ならOS設定", |ui| {
-                ui.add(TextEdit::singleline(&mut locale).hint_text("ja-JP"));
-            });
-            variable.set_param_optional("locale", &locale);
-            let mut timezone = variable.param_str("tz");
-            two_column_field(
-                ui,
-                "タイムゾーン",
-                "IANA名。空欄ならローカル",
-                |ui| {
-                    ui.add(TextEdit::singleline(&mut timezone).hint_text("Asia/Tokyo"));
-                },
-            );
-            variable.set_param_optional("tz", &timezone);
-        }
-        "clipboard" => {
-            callout(
-                ui,
-                theme::ACCENT,
-                "展開時点のクリップボード内容を挿入します。追加設定はありません。",
-            );
-        }
-        "echo" => {
-            let mut value = variable.param_str("echo");
-            two_column_field(
-                ui,
-                "固定値",
-                "複数のスニペットで再利用する値",
-                |ui| {
-                    ui.add(TextEdit::multiline(&mut value).desired_rows(4));
-                },
-            );
-            variable.set_param("echo", value);
-        }
-        "random" => {
-            let mut values = variable.param_strings("choices").join("\n");
-            two_column_field(
-                ui,
-                "候補",
-                "1行に1つ。ランダムに1件を選択",
-                |ui| {
-                    ui.add(TextEdit::multiline(&mut values).desired_rows(7));
-                },
-            );
-            variable.set_string_list(
-                "choices",
-                &values.lines().map(str::to_string).collect::<Vec<_>>(),
-            );
-        }
-        "choice" => {
-            let mut values = variable.param_strings("values").join("\n");
-            two_column_field(
-                ui,
-                "選択肢",
-                "1行に1つ。展開時に選択画面を表示",
-                |ui| {
-                    ui.add(TextEdit::multiline(&mut values).desired_rows(7));
-                },
-            );
-            variable.set_string_list(
-                "values",
-                &values.lines().map(str::to_string).collect::<Vec<_>>(),
-            );
-        }
-        "shell" => {
-            callout(
-                ui,
-                theme::AMBER,
-                "このコマンドはEspansoのトリガー実行時にローカル環境で実行されます。",
-            );
-            let mut command = variable.param_str("cmd");
-            two_column_field(
-                ui,
-                "コマンド",
-                "短時間で終了する処理を推奨",
-                |ui| {
-                    ui.add(
-                        TextEdit::multiline(&mut command)
-                            .font(FontId::monospace(14.0))
-                            .desired_rows(5),
-                    );
-                },
-            );
-            variable.set_param("cmd", command);
-            let mut shell = variable.param_str("shell");
-            two_column_field(ui, "シェル", "空欄ならOS既定", |ui| {
-                ComboBox::from_id_salt("shell-kind")
-                    .selected_text(if shell.is_empty() { "OS既定" } else { &shell })
-                    .show_ui(ui, |ui| {
-                        for value in ["", "sh", "bash", "powershell", "pwsh", "cmd", "wsl", "nu"] {
-                            ui.selectable_value(
-                                &mut shell,
-                                value.into(),
-                                if value.is_empty() { "OS既定" } else { value },
-                            );
-                        }
-                    });
-            });
-            variable.set_param_optional("shell", &shell);
-            let mut trim = variable.param_bool("trim", true);
-            ui.checkbox(&mut trim, "出力前後の空白と改行を除去");
-            variable.set_bool("trim", trim, true);
-            let mut debug = variable.param_bool("debug", false);
-            ui.checkbox(&mut debug, "Espansoログへデバッグ情報を出力");
-            variable.set_bool("debug", debug, false);
-        }
-        "script" => {
-            callout(
-                ui,
-                theme::AMBER,
-                "1行目に実行コマンド、2行目以降に引数を入力します。変数はESPANSO_<名前>環境変数でも参照できます。",
-            );
-            let mut args = variable.param_strings("args").join("\n");
-            two_column_field(ui, "コマンドと引数", "1行に1要素", |ui| {
-                ui.add(
-                    TextEdit::multiline(&mut args)
-                        .font(FontId::monospace(14.0))
-                        .desired_rows(7),
-                );
-            });
-            variable.set_string_list(
-                "args",
-                &args.lines().map(str::to_string).collect::<Vec<_>>(),
-            );
-            let mut trim = variable.param_bool("trim", true);
-            ui.checkbox(&mut trim, "出力前後の空白と改行を除去");
-            variable.set_bool("trim", trim, true);
-        }
-        "form" => {
-            let mut layout = variable.param_str("layout");
-            two_column_field(
-                ui,
-                "フォーム配置",
-                "[[field]] で入力欄を配置",
-                |ui| {
-                    ui.add(TextEdit::multiline(&mut layout).desired_rows(8));
-                },
-            );
-            variable.set_param("layout", layout);
-            let mut fields = variable.form_fields();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("フォーム項目").strong());
-                if ui.small_button("＋ 項目").clicked() {
-                    let mut suffix = 1;
-                    let mut name = "field".to_string();
-                    while fields.contains_key(&name) {
-                        suffix += 1;
-                        name = format!("field{suffix}");
-                    }
-                    fields.insert(name, FormField::default());
-                }
-            });
-            let mut remove = None;
-            let mut rename = None;
-            for (name, original_field) in fields.clone() {
-                let mut next_name = name.clone();
-                let mut field = original_field;
-                Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(TextEdit::singleline(&mut next_name).desired_width(130.0));
-                        let mut kind = form_field_kind(&field);
-                        ComboBox::from_id_salt(("variable-form-field", &name))
-                            .selected_text(&kind)
-                            .show_ui(ui, |ui| {
-                                for candidate in ["text", "multiline", "choice", "list"] {
-                                    ui.selectable_value(&mut kind, candidate.into(), candidate);
-                                }
-                            });
-                        set_form_field_kind(&mut field, &kind);
-                        if ui.small_button("削除").clicked() {
-                            remove = Some(name.clone());
-                        }
-                    });
-                    let mut default = field.default.clone().unwrap_or_default();
-                    if ui
-                        .add(TextEdit::singleline(&mut default).hint_text("初期値"))
-                        .changed()
-                    {
-                        field.default = (!default.is_empty()).then_some(default);
-                    }
-                    if matches!(form_field_kind(&field).as_str(), "choice" | "list") {
-                        let mut values = field.values.join("\n");
-                        if ui
-                            .add(
-                                TextEdit::multiline(&mut values)
-                                    .desired_rows(3)
-                                    .hint_text("選択肢を1行に1つ"),
-                            )
-                            .changed()
-                        {
-                            field.values = values.lines().map(str::to_string).collect();
-                        }
-                    }
-                });
-                fields.insert(name.clone(), field);
-                if next_name != name
-                    && !next_name.is_empty()
-                    && next_name
-                        .chars()
-                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-                    && !fields.contains_key(&next_name)
-                {
-                    rename = Some((name, next_name));
-                }
-            }
-            if let Some(name) = remove {
-                fields.shift_remove(&name);
-            }
-            if let Some((old, new)) = rename
-                && let Some(field) = fields.shift_remove(&old)
-            {
-                fields.insert(new, field);
-            }
-            variable.set_form_fields(&fields);
-        }
-        "global" => {
-            callout(
-                ui,
-                theme::ACCENT,
-                "同名のグローバル変数をローカル評価順へ明示的に含めます。追加パラメータはありません。",
-            );
-        }
-        _ => {
-            callout(
-                ui,
-                theme::AMBER,
-                "未知の変数タイプです。既存パラメータはRaw YAMLで保持されます。",
-            );
-        }
-    }
-}
-
-fn variable_summary(ui: &mut Ui, variable: &Variable) {
-    let summary = match variable.kind.as_str() {
-        "date" => format!(
-            "形式 {} / offset {}秒",
-            variable.param_str("format"),
-            variable.param_i64("offset")
-        ),
-        "clipboard" => "現在のクリップボード".into(),
-        "echo" => truncate(&variable.param_str("echo"), 80),
-        "random" => format!(
-            "{}件からランダム選択",
-            variable.param_strings("choices").len()
-        ),
-        "choice" => format!("{}件の選択肢", variable.param_strings("values").len()),
-        "shell" => truncate(&variable.param_str("cmd"), 80),
-        "script" => variable.param_strings("args").join(" "),
-        "form" => truncate(&variable.param_str("layout"), 80),
-        _ => "高度な変数".into(),
-    };
-    ui.label(RichText::new(summary).small().color(theme::MUTED));
-}
-
-fn variable_kind_label(kind: &str) -> &'static str {
-    match kind {
-        "date" => "日付・時刻",
-        "clipboard" => "クリップボード",
-        "choice" => "候補選択",
-        "random" => "ランダム",
-        "echo" => "固定値",
-        "shell" => "シェルコマンド",
-        "script" => "スクリプト",
-        "form" => "フォーム",
-        "global" => "グローバル参照",
-        _ => "カスタム",
-    }
-}
-
-fn form_field_kind(field: &FormField) -> String {
-    match field.r#type.as_deref() {
-        Some("choice") => "choice".into(),
-        Some("list") => "list".into(),
-        _ if field.multiline == Some(true) => "multiline".into(),
-        _ => "text".into(),
-    }
-}
-
-fn field_kind_label(field: &FormField) -> &'static str {
-    match form_field_kind(field).as_str() {
-        "choice" => "選択ボタン",
-        "list" => "リスト",
-        "multiline" => "複数行テキスト",
-        _ => "テキスト",
-    }
-}
-
-fn set_form_field_kind(field: &mut FormField, kind: &str) {
-    match kind {
-        "choice" | "list" => {
-            field.r#type = Some(kind.into());
-            field.multiline = None;
-        }
-        "multiline" => {
-            field.r#type = None;
-            field.multiline = Some(true);
-            field.values.clear();
-        }
-        _ => {
-            field.r#type = None;
-            field.multiline = None;
-            field.values.clear();
-        }
-    }
-}
-
-fn callout(ui: &mut Ui, color: Color32, text: &str) {
-    Frame::new()
-        .fill(color.gamma_multiply(0.10))
-        .stroke(Stroke::new(1.0, color.gamma_multiply(0.45)))
-        .corner_radius(8)
-        .inner_margin(Margin::same(10))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).color(theme::INK));
-        });
-}
-
-fn centered_empty_state(ui: &mut Ui, title: &str, description: &str) {
-    ui.add_space(40.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).size(22.0).strong());
-        ui.label(RichText::new(description).color(theme::MUTED));
-    });
-}
-
 fn message_bar(ui: &mut Ui, message: &Message) {
     let color = match message.kind {
-        MessageKind::Success => theme::ACCENT,
-        MessageKind::Info => Color32::from_rgb(66, 103, 146),
-        MessageKind::Error => theme::DANGER,
+        MessageKind::Success => theme::palette(ui).accent,
+        MessageKind::Info => theme::palette(ui).info,
+        MessageKind::Error => theme::palette(ui).danger,
     };
-    egui::Panel::bottom("message-bar")
-        .frame(
-            Frame::new()
-                .fill(color.gamma_multiply(0.12))
-                .inner_margin(Margin::symmetric(18, 8)),
-        )
-        .show(ui, |ui| {
-            ui.label(RichText::new(&message.text).color(color).strong());
-        });
+    let live = match message.kind {
+        MessageKind::Error => egui::accesskit::Live::Assertive,
+        MessageKind::Success | MessageKind::Info => egui::accesskit::Live::Polite,
+    };
+    live_message_bar(ui, &message.text, color, live);
 }
 
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let prefix: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{prefix}…")
-    } else {
-        prefix
+fn localized_new_snippet(language: Language) -> Snippet {
+    Snippet::with_template(
+        i18n::text(language, TextKey::NewSnippetLabel),
+        i18n::text(language, TextKey::NewSnippetContent),
+    )
+}
+
+fn localized_snippet_title(language: Language, snippet: &Snippet) -> String {
+    snippet
+        .title()
+        .unwrap_or_else(|| i18n::text(language, TextKey::UntitledSnippet).into())
+}
+
+fn localized_new_variable(language: Language, kind: &str) -> Variable {
+    let mut variable = Variable::new(kind);
+    match kind {
+        "echo" => variable.set_param("echo", i18n::text(language, TextKey::ExampleValue)),
+        "random" => variable.set_string_list(
+            "choices",
+            &[
+                i18n::text(language, TextKey::ExampleCandidateOne).into(),
+                i18n::text(language, TextKey::ExampleCandidateTwo).into(),
+            ],
+        ),
+        "choice" => variable.set_string_list(
+            "values",
+            &[
+                i18n::text(language, TextKey::ExampleCandidateOne).into(),
+                i18n::text(language, TextKey::ExampleCandidateTwo).into(),
+            ],
+        ),
+        "form" => variable.set_param("layout", i18n::text(language, TextKey::ExampleFormLayout)),
+        _ => {}
     }
+    variable
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
 
-    #[test]
-    fn truncates_by_characters_not_bytes() {
-        assert_eq!(truncate("日本語テキスト", 3), "日本語…");
-        assert_eq!(truncate("short", 10), "short");
+    fn accessibility_fixture(language: Language) -> EspansoGuiApp {
+        let root = PathBuf::from("/tmp/espanso-gui-accessibility-fixture");
+        let match_yaml = r#"global_vars:
+  - name: today
+    type: date
+    params:
+      format: "%Y-%m-%d"
+  - name: greeting
+    type: echo
+    params:
+      echo: hello
+matches:
+  - trigger: ":form"
+    label: "Form example"
+    search_terms: [forms, demo]
+    form: "Name: [[name]] / Choice: [[choice]]"
+    form_fields:
+      name:
+        default: Ada
+      choice:
+        type: choice
+        values: [One, Two]
+      future:
+        type: future_widget
+  - trigger: ":form"
+    label: "Duplicate diagnostic"
+    replace: "{{missing_variable}}"
+"#;
+        let profile_yaml = r#"filter_title: Browser
+inject_delay: 1
+max_form_width: 640
+"#;
+        let files = vec![WorkspaceFile {
+            relative_path: PathBuf::from("match/base.yml"),
+            display_name: "base".into(),
+            document: crate::model::MatchFile::from_yaml(match_yaml).expect("match fixture"),
+            raw_yaml: match_yaml.into(),
+            base_yaml: match_yaml.into(),
+            saved_hash: "fixture".into(),
+            modified_ms: 0,
+            is_package: false,
+            dirty: false,
+            had_comments: false,
+        }];
+        let config_files = vec![ConfigFile {
+            relative_path: PathBuf::from("config/browser.yml"),
+            display_name: "browser".into(),
+            profile: crate::model::ConfigProfile::from_yaml(profile_yaml).expect("profile fixture"),
+            raw_yaml: profile_yaml.into(),
+            base_yaml: profile_yaml.into(),
+            saved_hash: "fixture".into(),
+            modified_ms: 0,
+            is_default: false,
+            dirty: false,
+            had_comments: false,
+        }];
+        let preferences = Preferences {
+            config_root: root.clone(),
+            language,
+            ui_scale: 1.0,
+            snippet_sort: SnippetSort::FileOrder,
+            appearance: theme::Appearance::System,
+        };
+        let status = EspansoStatus {
+            config_root: root,
+            ..EspansoStatus::default()
+        };
+        EspansoGuiApp::from_loaded(preferences, status, files, config_files, None)
     }
 
-    #[test]
-    fn form_field_kinds_map_to_espanso_options() {
-        let mut field = FormField::default();
-        set_form_field_kind(&mut field, "multiline");
-        assert_eq!(field.multiline, Some(true));
-        set_form_field_kind(&mut field, "choice");
-        assert_eq!(field.r#type.as_deref(), Some("choice"));
-        assert_eq!(field.multiline, None);
+    fn accessibility_update_at_size(
+        app: &mut EspansoGuiApp,
+        screen_size: egui::Vec2,
+    ) -> egui::accesskit::TreeUpdate {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::install(&context);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+            ..Default::default()
+        };
+        let mut warmup = context.run_ui(input.clone(), |ui| app.render(ui));
+        warmup.textures_delta.clear();
+        let mut output = context.run_ui(input, |ui| app.render(ui));
+        output.textures_delta.clear();
+        output
+            .platform_output
+            .accesskit_update
+            .expect("accessibility should be enabled")
     }
 
-    #[test]
-    fn variable_labels_are_friendly() {
-        assert_eq!(variable_kind_label("date"), "日付・時刻");
-        assert_eq!(variable_kind_label("custom"), "カスタム");
+    fn accessibility_update(app: &mut EspansoGuiApp) -> egui::accesskit::TreeUpdate {
+        accessibility_update_at_size(
+            app,
+            egui::vec2(theme::DEFAULT_WINDOW_SIZE[0], theme::DEFAULT_WINDOW_SIZE[1]),
+        )
     }
 
-    #[test]
-    fn html_composer_emits_predictable_portable_fragments() {
-        assert_eq!(html_fragment(HtmlCommand::Bold), "<strong>太字</strong>");
-        assert_eq!(
-            html_fragment(HtmlCommand::UnorderedList),
-            "<ul><li>項目1</li><li>項目2</li></ul>"
+    fn accessibility_nodes(
+        update: &egui::accesskit::TreeUpdate,
+    ) -> HashMap<egui::accesskit::NodeId, &egui::accesskit::Node> {
+        update.nodes.iter().map(|(id, node)| (*id, node)).collect()
+    }
+
+    fn accessible_name(
+        id: egui::accesskit::NodeId,
+        nodes: &HashMap<egui::accesskit::NodeId, &egui::accesskit::Node>,
+    ) -> String {
+        let node = nodes.get(&id).expect("accessibility node");
+        if let Some(label) = node.label().filter(|label| !label.trim().is_empty()) {
+            return label.trim().to_owned();
+        }
+        node.labelled_by()
+            .iter()
+            .filter_map(|label_id| nodes.get(label_id))
+            .filter_map(|label| label.label().or_else(|| label.value()))
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn focusable_nodes_from<'a>(
+        root: egui::accesskit::NodeId,
+        nodes: &HashMap<egui::accesskit::NodeId, &'a egui::accesskit::Node>,
+    ) -> Vec<(egui::accesskit::NodeId, &'a egui::accesskit::Node)> {
+        fn visit<'a>(
+            id: egui::accesskit::NodeId,
+            nodes: &HashMap<egui::accesskit::NodeId, &'a egui::accesskit::Node>,
+            output: &mut Vec<(egui::accesskit::NodeId, &'a egui::accesskit::Node)>,
+        ) {
+            let node = nodes.get(&id).expect("complete initial accessibility tree");
+            if node.supports_action(egui::accesskit::Action::Focus) {
+                output.push((id, node));
+            }
+            for child in node.children() {
+                visit(*child, nodes, output);
+            }
+        }
+
+        let mut output = Vec::new();
+        visit(root, nodes, &mut output);
+        output
+    }
+
+    fn focusable_nodes(
+        update: &egui::accesskit::TreeUpdate,
+    ) -> Vec<(egui::accesskit::NodeId, &egui::accesskit::Node)> {
+        let nodes = accessibility_nodes(update);
+        let root = update.tree.as_ref().expect("initial tree").root;
+        focusable_nodes_from(root, &nodes)
+    }
+
+    fn focus_labels(app: &mut EspansoGuiApp) -> Vec<String> {
+        let update = accessibility_update(app);
+        assert_named_horizontal_bounds(&update, theme::DEFAULT_WINDOW_SIZE[0]);
+        focus_labels_from_update(&update)
+    }
+
+    fn focus_labels_at_size(app: &mut EspansoGuiApp, screen_size: egui::Vec2) -> Vec<String> {
+        let update = accessibility_update_at_size(app, screen_size);
+        assert_named_horizontal_bounds(&update, screen_size.x);
+        focus_labels_from_update(&update)
+    }
+
+    fn focus_labels_from_update(update: &egui::accesskit::TreeUpdate) -> Vec<String> {
+        let nodes = accessibility_nodes(update);
+        focusable_nodes(update)
+            .into_iter()
+            .map(|(id, _)| accessible_name(id, &nodes))
+            .collect()
+    }
+
+    fn assert_named_horizontal_bounds(update: &egui::accesskit::TreeUpdate, screen_width: f32) {
+        let nodes = accessibility_nodes(update);
+        for (id, node) in &update.nodes {
+            if node.role() == egui::accesskit::Role::TextRun {
+                continue;
+            }
+            let name = accessible_name(*id, &nodes);
+            if name.is_empty() {
+                continue;
+            }
+            let Some(bounds) = node.bounds() else {
+                continue;
+            };
+            assert!(
+                bounds.x0 >= -1.0 && bounds.x1 <= f64::from(screen_width) + 1.0,
+                "named UI node {name:?} overflows horizontally: {bounds:?} in {screen_width}"
+            );
+        }
+    }
+
+    fn label_position(labels: &[String], visible_label: &str) -> usize {
+        labels
+            .iter()
+            .position(|label| label.starts_with(visible_label))
+            .unwrap_or_else(|| panic!("missing focus label {visible_label:?} in {labels:#?}"))
+    }
+
+    fn maximum_zoom_screen_size() -> egui::Vec2 {
+        egui::vec2(
+            theme::MINIMUM_WINDOW_SIZE[0] / theme::UI_SCALE_MAX,
+            theme::MINIMUM_WINDOW_SIZE[1] / theme::UI_SCALE_MAX,
+        )
+    }
+
+    fn screen_size_at_scale(scale: f32) -> egui::Vec2 {
+        egui::vec2(
+            theme::MINIMUM_WINDOW_SIZE[0] / scale,
+            theme::MINIMUM_WINDOW_SIZE[1] / scale,
+        )
+    }
+
+    fn assert_modal_accessibility(
+        app: &mut EspansoGuiApp,
+        expected_title: &str,
+        expected_controls: &[String],
+    ) -> HashSet<String> {
+        assert_modal_accessibility_at_size(
+            app,
+            egui::vec2(theme::DEFAULT_WINDOW_SIZE[0], theme::DEFAULT_WINDOW_SIZE[1]),
+            expected_title,
+            expected_controls,
+        )
+    }
+
+    fn assert_modal_accessibility_at_size(
+        app: &mut EspansoGuiApp,
+        screen_size: egui::Vec2,
+        expected_title: &str,
+        expected_controls: &[String],
+    ) -> HashSet<String> {
+        let update = accessibility_update_at_size(app, screen_size);
+        assert_named_horizontal_bounds(&update, screen_size.x);
+        let (dialog_id, dialog) = update
+            .nodes
+            .iter()
+            .map(|(id, node)| (*id, node))
+            .find(|(_, node)| node.role() == egui::accesskit::Role::Dialog)
+            .expect("dialog node");
+        assert_eq!(dialog.label(), Some(expected_title));
+        assert!(dialog.is_modal());
+
+        let nodes = accessibility_nodes(&update);
+        let focusable = focusable_nodes_from(dialog_id, &nodes);
+        for (id, node) in &focusable {
+            let Some(bounds) = node.bounds() else {
+                continue;
+            };
+            let height = bounds.y1 - bounds.y0;
+            let width = bounds.x1 - bounds.x0;
+            assert!(
+                height + 1.0 >= f64::from(theme::CONTROL_HEIGHT),
+                "dialog control {:?} is only {height:.1}px high in {expected_title:?}: {bounds:?}",
+                accessible_name(*id, &nodes)
+            );
+            assert!(
+                width + 1.0 >= f64::from(theme::CONTROL_MIN_WIDTH),
+                "dialog control {:?} is only {width:.1}px wide in {expected_title:?}: {bounds:?}",
+                accessible_name(*id, &nodes)
+            );
+        }
+        let labels = focusable
+            .into_iter()
+            .map(|(id, _)| accessible_name(id, &nodes))
+            .collect::<HashSet<_>>();
+        assert!(
+            labels.iter().all(|label| !label.is_empty()),
+            "unnamed dialog control in {expected_title:?}: {labels:#?}"
         );
-        assert!(html_fragment(HtmlCommand::Color).contains("color: #197966"));
-        assert!(html_fragment(HtmlCommand::Image).contains("$CONFIG/assets/image.png"));
+        for expected in expected_controls {
+            assert!(
+                labels.contains(expected),
+                "missing dialog control {expected:?} in {expected_title:?}: {labels:#?}"
+            );
+        }
+        labels
+    }
+
+    fn conflict_fixture() -> ExternalConflict {
+        let base = serde_yaml_ng::from_str("matches:\n  - replace: base\n").expect("base YAML");
+        let local = serde_yaml_ng::from_str("matches:\n  - replace: local\n").expect("local YAML");
+        let disk = serde_yaml_ng::from_str("matches:\n  - replace: disk\n").expect("disk YAML");
+        ExternalConflict {
+            remote_yaml: "matches:\n  - replace: disk\n".into(),
+            remote_hash: "fixture".into(),
+            plan: crate::conflict::MergePlan::new(&base, &local, &disk),
+        }
     }
 
     #[test]
-    fn html_preview_never_exposes_active_content_or_remote_urls() {
-        let html = r#"<h2>Hello</h2><script>steal()</script><style>body{}</style><img src="https://example.com/tracker.png"><p>Safe &amp; sound</p>"#;
-        let preview = safe_html_preview(html);
-        assert!(preview.contains("Hello"));
-        assert!(preview.contains("[画像]"));
-        assert!(preview.contains("Safe & sound"));
-        assert!(!preview.contains("steal"));
-        assert!(!preview.contains("body"));
-        assert!(!preview.contains("https://"));
+    fn new_snippet_template_follows_the_selected_language() {
+        let japanese = localized_new_snippet(Language::Japanese);
+        assert_eq!(japanese.label.as_deref(), Some("新しいスニペット"));
+        assert_eq!(japanese.content(), "ここに展開するテキストを入力");
+
+        let english = localized_new_snippet(Language::English);
+        assert_eq!(english.label.as_deref(), Some("New snippet"));
+        assert_eq!(english.content(), "Enter replacement text here");
+
+        let mut untitled = Snippet::new();
+        untitled.trigger = None;
+        assert_eq!(
+            localized_snippet_title(Language::English, &untitled),
+            "Untitled snippet"
+        );
+    }
+
+    #[test]
+    fn snippet_search_spans_all_files_without_changing_the_unfiltered_list() {
+        let app = accessibility_fixture(Language::English);
+        let mut files = app.files;
+        files[0].document.matches[0].search_terms = vec!["Forms".into(), "Work".into()];
+        let remote_yaml = r#"matches:
+  - trigger: ":remote"
+    label: "Remote result"
+    replace: "Found in another file"
+"#;
+        let mut remote = files[0].clone();
+        remote.relative_path = PathBuf::from("match/remote.yml");
+        remote.display_name = "remote".into();
+        remote.document = crate::model::MatchFile::from_yaml(remote_yaml).unwrap();
+        remote.document.matches[0].search_terms = vec!["work".into()];
+        files.push(remote);
+
+        let unfiltered =
+            snippet_library::entries(&files, 0, "", Language::English, SnippetSort::FileOrder);
+        assert_eq!(unfiltered.len(), 2);
+        assert!(unfiltered.iter().all(|entry| entry.file_index == 0));
+
+        let results = snippet_library::entries(
+            &files,
+            0,
+            "  REMOTE  ",
+            Language::English,
+            SnippetSort::FileOrder,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_index, 1);
+        assert_eq!(results[0].snippet_index, 0);
+        assert_eq!(results[0].title, "Remote result");
+        assert!(results[0].context.contains("match/remote.yml"));
+
+        let sorted = snippet_library::entries(&files, 0, ":", Language::English, SnippetSort::Name);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|entry| entry.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Duplicate diagnostic", "Form example", "Remote result"]
+        );
+        assert_eq!(
+            snippet_library::search_terms(&files),
+            vec![("Forms".into(), 1), ("Work".into(), 2)]
+        );
+    }
+
+    #[test]
+    fn empty_search_results_are_explained_and_keyboard_recoverable_in_both_languages() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            app.search = "definitely-not-present".into();
+            let update = accessibility_update(&mut app);
+            let result_count = i18n::search_result_count(language, 0);
+            let live_nodes = update
+                .nodes
+                .iter()
+                .map(|(_, node)| node)
+                .filter(|node| node.live().is_some())
+                .map(|node| (node.label(), node.live()))
+                .collect::<Vec<_>>();
+            assert!(
+                live_nodes.iter().any(|(label, live)| {
+                    *label == Some(&result_count) && *live == Some(egui::accesskit::Live::Polite)
+                }),
+                "missing localized live result count {result_count:?} in {live_nodes:#?}"
+            );
+            let focus_labels = focus_labels_from_update(&update);
+            for key in [TextKey::FilterByTag, TextKey::ClearSearch] {
+                assert!(
+                    focus_labels
+                        .iter()
+                        .any(|label| label == i18n::text(language, key)),
+                    "missing {key:?} in {language:?}: {focus_labels:#?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disconnected_workspace_exposes_bilingual_next_steps_at_maximum_zoom() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            app.files.clear();
+            app.status.installed = false;
+            let labels = focus_labels_at_size(&mut app, maximum_zoom_screen_size());
+            assert!(
+                labels.iter().all(|label| !label.is_empty()),
+                "unnamed onboarding control in {language:?}: {labels:#?}"
+            );
+            for key in [
+                TextKey::OpenEspansoSetup,
+                TextKey::ChooseConfigFolder,
+                TextKey::InitializeHere,
+            ] {
+                assert!(
+                    labels
+                        .iter()
+                        .any(|label| label == i18n::text(language, key)),
+                    "missing onboarding action {key:?} in {language:?}: {labels:#?}"
+                );
+            }
+            assert!(
+                labels
+                    .iter()
+                    .all(|label| label != i18n::text(language, TextKey::AddFile)),
+                "file creation should stay hidden until a workspace is connected: {labels:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_navigation_labels_and_shortcuts_fit_without_truncation() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let available_text_width = theme::NAVIGATION_WIDTH
+            - 2.0 * f32::from(theme::PADDING_LG)
+            - 2.0 * f32::from(theme::PADDING_MD);
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            for language in Language::ALL {
+                for (key, shortcut) in [
+                    (TextKey::Snippets, navigation::command_shortcut("1")),
+                    (TextKey::Profiles, navigation::command_shortcut("2")),
+                    (TextKey::Globals, navigation::command_shortcut("3")),
+                    (TextKey::Diagnostics, navigation::command_shortcut("4")),
+                    (TextKey::SettingsNav, navigation::command_shortcut("5")),
+                    (TextKey::About, String::new()),
+                ] {
+                    let label = i18n::text(language, key);
+                    let label_width = ui
+                        .painter()
+                        .layout_no_wrap(label.into(), font.clone(), theme::palette(ui).ink)
+                        .size()
+                        .x;
+                    let shortcut_width = ui
+                        .painter()
+                        .layout_no_wrap(shortcut.clone(), font.clone(), theme::palette(ui).ink)
+                        .size()
+                        .x;
+                    let atom_gaps = 2.0 * ui.spacing().icon_spacing;
+                    assert!(
+                        label_width + shortcut_width + atom_gaps <= available_text_width,
+                        "{language:?} {key:?} needs {:.1}px but only {available_text_width:.1}px is available",
+                        label_width + shortcut_width + atom_gaps
+                    );
+                }
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn snippet_search_hint_fits_the_input_in_both_languages() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let available_text_width = theme::SNIPPET_LIST_COMPACT_WIDTH
+            - 2.0 * f32::from(theme::PADDING_LG)
+            - 2.0 * f32::from(theme::PADDING_MD);
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            for language in Language::ALL {
+                let hint = i18n::text(language, TextKey::SearchHint);
+                let width = ui
+                    .painter()
+                    .layout_no_wrap(hint.into(), font.clone(), theme::palette(ui).muted)
+                    .size()
+                    .x;
+                assert!(
+                    width <= available_text_width,
+                    "{language:?} search hint needs {width:.1}px but only {available_text_width:.1}px is available"
+                );
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn short_field_descriptions_fit_the_wide_label_column() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            for language in Language::ALL {
+                for key in [
+                    TextKey::DisplayNameDescription,
+                    TextKey::LanguageDescription,
+                ] {
+                    let label = i18n::text(language, key);
+                    let width = ui
+                        .painter()
+                        .layout_no_wrap(label.into(), font.clone(), theme::palette(ui).muted)
+                        .size()
+                        .x;
+                    assert!(
+                        width <= theme::FIELD_LABEL_WIDTH,
+                        "{language:?} {key:?} needs {width:.1}px but the wide field label column provides only {:.1}px",
+                        theme::FIELD_LABEL_WIDTH
+                    );
+                }
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn long_file_list_keeps_navigation_footer_actions_visible() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            let template = app.files[0].clone();
+            app.files = (0..32)
+                .map(|index| {
+                    let mut file = template.clone();
+                    file.display_name = format!("file-{index:02}");
+                    file.relative_path = PathBuf::from(format!("match/file-{index:02}.yml"));
+                    file
+                })
+                .collect();
+
+            let screen_size =
+                egui::vec2(theme::DEFAULT_WINDOW_SIZE[0], theme::MINIMUM_WINDOW_SIZE[1]);
+            let update = accessibility_update_at_size(&mut app, screen_size);
+            let nodes = accessibility_nodes(&update);
+            let focusable = focusable_nodes(&update);
+            for key in [TextKey::AddFile, TextKey::SettingsNav, TextKey::About] {
+                let expected = i18n::text(language, key);
+                let (_, node) = focusable
+                    .iter()
+                    .find(|(id, _)| accessible_name(*id, &nodes).starts_with(expected))
+                    .unwrap_or_else(|| {
+                        panic!("missing footer action {expected:?} in {language:?}")
+                    });
+                let bounds = node.bounds().expect("footer action bounds");
+                assert!(
+                    bounds.y0 >= -1.0 && bounds.y1 <= f64::from(screen_size.y) + 1.0,
+                    "footer action {expected:?} is outside the viewport: {bounds:?}"
+                );
+            }
+            let add_file_name = i18n::text(language, TextKey::AddFile);
+            let add_file_bounds = focusable
+                .iter()
+                .find(|(id, _)| accessible_name(*id, &nodes).starts_with(add_file_name))
+                .and_then(|(_, node)| node.bounds())
+                .expect("add-file bounds");
+            let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            let version_bounds = nodes
+                .values()
+                .find_map(|node| {
+                    (node.label().or_else(|| node.value()) == Some(version.as_str()))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .expect("version bounds");
+            assert!(
+                add_file_bounds.y1 + f64::from(theme::SPACE_XS) <= version_bounds.y0,
+                "add-file and version surfaces overlap: {add_file_bounds:?} / {version_bounds:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_section_selector_fits_every_localized_value_without_truncation() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let maximum_zoom_width = theme::MINIMUM_WINDOW_SIZE[0] / theme::UI_SCALE_MAX;
+        let selector_row_width = theme::COMPACT_SECTION_SELECTOR_WIDTH
+            + theme::COMPACT_FILE_SELECTOR_WIDTH
+            + f32::from(theme::PADDING_COMPACT);
+        let available_row_width = maximum_zoom_width - 2.0 * f32::from(theme::PADDING_MD);
+        assert!(
+            selector_row_width <= available_row_width,
+            "compact selectors need {selector_row_width:.1}px but maximum zoom provides only {available_row_width:.1}px"
+        );
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            for language in Language::ALL {
+                for section in [
+                    Section::Library,
+                    Section::Profiles,
+                    Section::Globals,
+                    Section::Diagnostics,
+                    Section::Settings,
+                    Section::About,
+                ] {
+                    let label = i18n::text(language, section.text_key());
+                    let label_width = ui
+                        .painter()
+                        .layout_no_wrap(label.into(), font.clone(), theme::palette(ui).ink)
+                        .size()
+                        .x;
+                    let required_width = label_width
+                        + 2.0 * ui.spacing().button_padding.x
+                        + ui.spacing().icon_width
+                        + ui.spacing().icon_spacing;
+                    assert!(
+                        required_width <= theme::COMPACT_SECTION_SELECTOR_WIDTH,
+                        "{language:?} {section:?} needs {required_width:.1}px but the compact selector provides only {:.1}px",
+                        theme::COMPACT_SECTION_SELECTOR_WIDTH
+                    );
+                }
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn compact_top_bar_keeps_visible_status_text_at_maximum_zoom() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let available_width = theme::MINIMUM_WINDOW_SIZE[0] / theme::UI_SCALE_MAX
+            - 2.0 * f32::from(theme::PADDING_LG);
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let display_font = FontId::new(theme::TEXT_DISPLAY, FontFamily::Proportional);
+            let section_font = FontId::new(theme::TEXT_SECTION, FontFamily::Proportional);
+            let body_font = egui::TextStyle::Button.resolve(ui.style());
+            let small_font = egui::TextStyle::Small.resolve(ui.style());
+            let fixed_width = ui
+                .painter()
+                .layout_no_wrap("E/".into(), display_font, theme::palette(ui).accent)
+                .size()
+                .x
+                + ui
+                    .painter()
+                    .layout_no_wrap(
+                        "Espanso GUI".into(),
+                        section_font,
+                        theme::palette(ui).ink,
+                    )
+                    .size()
+                    .x;
+
+            for language in Language::ALL {
+                for status_key in [TextKey::ConnectedShort, TextKey::NotDetectedShort] {
+                    let status_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            i18n::text(language, status_key).into(),
+                            small_font.clone(),
+                            theme::palette(ui).ink,
+                        )
+                        .size()
+                        .x;
+                    let save_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            i18n::text(language, TextKey::Save).into(),
+                            body_font.clone(),
+                            theme::palette(ui).ink,
+                        )
+                        .size()
+                        .x;
+                    let required_width = fixed_width
+                        + status_width
+                        + save_width
+                        + 4.0 * f32::from(theme::PADDING_MD)
+                        + 3.0 * theme::SPACE_MD;
+                    assert!(
+                        required_width <= available_width,
+                        "{language:?} {status_key:?} top bar needs {required_width:.1}px but only {available_width:.1}px is available"
+                    );
+                }
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn new_variable_templates_follow_the_selected_language() {
+        assert_eq!(
+            localized_new_variable(Language::Japanese, "echo").param_str("echo"),
+            "値"
+        );
+        assert_eq!(
+            localized_new_variable(Language::English, "choice").param_strings("values"),
+            vec!["Candidate 1", "Candidate 2"]
+        );
+        assert_eq!(
+            localized_new_variable(Language::English, "form").param_str("layout"),
+            "Name: [[name]]"
+        );
+    }
+
+    #[test]
+    fn application_styles_use_semantic_theme_colors() {
+        for source in [
+            include_str!("app.rs"),
+            include_str!("html_editor.rs"),
+            include_str!("navigation.rs"),
+            include_str!("profile_editor.rs"),
+            include_str!("settings_editor.rs"),
+            include_str!("snippet_editor.rs"),
+            include_str!("top_bar.rs"),
+            include_str!("ui_components.rs"),
+            include_str!("variable_editor.rs"),
+            include_str!("yaml_editor.rs"),
+        ] {
+            assert!(!source.contains(concat!("Color32::from_", "rgb")));
+            assert!(!source.contains(concat!("Color32::from_", "gray")));
+            assert!(!source.contains(concat!("Color32::", "WHITE")));
+        }
+    }
+
+    #[test]
+    fn primary_views_expose_named_controls_in_stable_navigation_order() {
+        for language in Language::ALL {
+            for section in [
+                Section::Library,
+                Section::Profiles,
+                Section::Globals,
+                Section::Diagnostics,
+                Section::Settings,
+                Section::About,
+            ] {
+                let mut app = accessibility_fixture(language);
+                app.section = section;
+                let labels = focus_labels(&mut app);
+                assert!(
+                    labels.iter().all(|label| !label.is_empty()),
+                    "unnamed focusable control in {language:?} {section:?}: {labels:#?}"
+                );
+
+                let ordered_navigation = [
+                    TextKey::Save,
+                    TextKey::Reload,
+                    TextKey::Snippets,
+                    TextKey::Profiles,
+                    TextKey::Globals,
+                    TextKey::Diagnostics,
+                ]
+                .map(|key| label_position(&labels, i18n::text(language, key)));
+                assert!(
+                    ordered_navigation.windows(2).all(|pair| pair[0] < pair[1]),
+                    "unstable navigation order in {language:?} {section:?}: {labels:#?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn primary_view_controls_keep_comfortable_hit_targets() {
+        for language in Language::ALL {
+            for section in [
+                Section::Library,
+                Section::Profiles,
+                Section::Globals,
+                Section::Diagnostics,
+                Section::Settings,
+                Section::About,
+            ] {
+                let mut app = accessibility_fixture(language);
+                app.section = section;
+                let update = accessibility_update(&mut app);
+                let nodes = accessibility_nodes(&update);
+                for (id, node) in focusable_nodes(&update) {
+                    let Some(bounds) = node.bounds() else {
+                        continue;
+                    };
+                    let height = bounds.y1 - bounds.y0;
+                    let width = bounds.x1 - bounds.x0;
+                    assert!(
+                        height + 1.0 >= f64::from(theme::CONTROL_HEIGHT),
+                        "control {:?} is only {height:.1}px high in {language:?} {section:?}: {bounds:?}",
+                        accessible_name(id, &nodes)
+                    );
+                    assert!(
+                        width + 1.0 >= f64::from(theme::CONTROL_MIN_WIDTH),
+                        "control {:?} is only {width:.1}px wide in {language:?} {section:?}: {bounds:?}",
+                        accessible_name(id, &nodes)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wide_navigation_and_file_rows_expose_their_selected_state() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            let update = accessibility_update(&mut app);
+            let nodes = accessibility_nodes(&update);
+            let toggled = focusable_nodes(&update)
+                .into_iter()
+                .filter_map(|(id, node)| {
+                    node.toggled()
+                        .map(|state| (accessible_name(id, &nodes), state))
+                })
+                .collect::<Vec<_>>();
+            let selected_section = i18n::text(language, TextKey::Snippets);
+
+            assert!(
+                toggled.iter().any(|(name, state)| {
+                    name.starts_with(selected_section) && *state == egui::accesskit::Toggled::True
+                }),
+                "selected navigation state missing in {language:?}: {toggled:#?}"
+            );
+            assert!(
+                toggled.iter().any(|(name, state)| {
+                    name.starts_with("base") && *state == egui::accesskit::Toggled::True
+                }),
+                "selected file state missing in {language:?}: {toggled:#?}"
+            );
+            let profiles = i18n::text(language, TextKey::Profiles);
+            assert!(
+                toggled.iter().any(|(name, state)| {
+                    name.starts_with(profiles) && *state == egui::accesskit::Toggled::False
+                }),
+                "unselected navigation state missing in {language:?}: {toggled:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn maximum_zoom_keeps_primary_views_and_large_dialog_actions_exposed() {
+        let screen_size = maximum_zoom_screen_size();
+        for language in Language::ALL {
+            for section in [
+                Section::Library,
+                Section::Profiles,
+                Section::Globals,
+                Section::Diagnostics,
+                Section::Settings,
+                Section::About,
+            ] {
+                let mut app = accessibility_fixture(language);
+                app.section = section;
+                app.files[0].dirty = true;
+                let update = accessibility_update_at_size(&mut app, screen_size);
+                assert_named_horizontal_bounds(&update, screen_size.x);
+                let labels = focus_labels_from_update(&update);
+                assert!(
+                    labels.iter().all(|label| !label.is_empty()),
+                    "unnamed 200%-zoom control in {language:?} {section:?}: {labels:#?}"
+                );
+                let nodes = accessibility_nodes(&update);
+                let workspace_name = i18n::text(language, TextKey::Workspace);
+                let section_selector = focusable_nodes(&update)
+                    .into_iter()
+                    .find(|(id, _)| accessible_name(*id, &nodes) == workspace_name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing compact workspace selector in {language:?} {section:?}: {labels:#?}"
+                        )
+                    });
+                assert_eq!(
+                    section_selector.1.value(),
+                    Some(i18n::text(language, section.text_key())),
+                    "compact workspace selector does not expose its current section"
+                );
+                let (primary_name, primary) = match section {
+                    Section::Library | Section::Profiles | Section::Globals | Section::Settings => {
+                        let key = match section {
+                            Section::Library => TextKey::Search,
+                            Section::Profiles => TextKey::Visual,
+                            Section::Globals => TextKey::AddVariable,
+                            Section::Settings => TextKey::Language,
+                            _ => unreachable!(),
+                        };
+                        let name = i18n::text(language, key);
+                        let node = focusable_nodes(&update)
+                            .into_iter()
+                            .find(|(id, _)| accessible_name(*id, &nodes).starts_with(name))
+                            .map(|(_, node)| node)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "missing primary action {name:?} in {language:?} {section:?}: {labels:#?}"
+                                )
+                            });
+                        (name, node)
+                    }
+                    Section::Diagnostics | Section::About => {
+                        let node = update
+                            .nodes
+                            .iter()
+                            .map(|(_, node)| node)
+                            .find(|node| {
+                                node.role() == egui::accesskit::Role::Heading
+                                    && node.level() == Some(1)
+                            })
+                            .unwrap_or_else(|| {
+                                panic!("missing page heading in {language:?} {section:?}")
+                            });
+                        (i18n::text(language, section.text_key()), node)
+                    }
+                };
+                let bounds = primary
+                    .bounds()
+                    .unwrap_or_else(|| panic!("primary surface {primary_name:?} has no bounds"));
+                assert!(
+                    bounds.y0 < f64::from(screen_size.y) && bounds.y1 > 0.0,
+                    "primary surface {primary_name:?} starts below the maximum-zoom viewport in {language:?} {section:?}: {bounds:?}"
+                );
+            }
+
+            let mut variable_app = accessibility_fixture(language);
+            variable_app.variable_editor =
+                Some(VariableEditor::new(VariableScope::Global, "echo", language));
+            assert_modal_accessibility_at_size(
+                &mut variable_app,
+                screen_size,
+                i18n::text(language, TextKey::AddVariableTitle),
+                &[TextKey::SaveVariable, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut form_app = accessibility_fixture(language);
+            form_app.form_field_editor = Some(FormFieldEditor {
+                original_name: None,
+                name: "field".into(),
+                field: FormField::default(),
+            });
+            assert_modal_accessibility_at_size(
+                &mut form_app,
+                screen_size,
+                i18n::text(language, TextKey::FormFieldTitle),
+                &[TextKey::SaveField, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut conflict_app = accessibility_fixture(language);
+            let conflict = conflict_fixture();
+            conflict_app.conflict_dialog = Some(ConflictDialog {
+                target: ConflictTarget::Match(0),
+                choices: vec![ResolutionChoice::Local; conflict.plan.conflicts.len()],
+                conflict,
+            });
+            assert_modal_accessibility_at_size(
+                &mut conflict_app,
+                screen_size,
+                i18n::text(language, TextKey::ConflictTitle),
+                &[TextKey::MergeAndSave, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+        }
+    }
+
+    #[test]
+    fn supported_scale_checkpoints_keep_every_primary_view_horizontally_exposed() {
+        for scale in [0.8, 1.0, 1.5, 2.0] {
+            let screen_size = screen_size_at_scale(scale);
+            let percentage = scale * 100.0;
+            for language in Language::ALL {
+                for section in [
+                    Section::Library,
+                    Section::Profiles,
+                    Section::Globals,
+                    Section::Diagnostics,
+                    Section::Settings,
+                    Section::About,
+                ] {
+                    let mut app = accessibility_fixture(language);
+                    app.section = section;
+                    app.files[0].dirty = true;
+                    let update = accessibility_update_at_size(&mut app, screen_size);
+                    assert_named_horizontal_bounds(&update, screen_size.x);
+                    let labels = focus_labels_from_update(&update);
+                    assert!(
+                        labels.iter().all(|label| !label.is_empty()),
+                        "unnamed control at {percentage:.0}% scale in {language:?} {section:?}: {labels:#?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_editor_actions_have_unique_contextual_names() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            app.section = Section::Library;
+            let library = focus_labels(&mut app);
+            for (key, target) in [
+                (TextKey::Delete, "name"),
+                (TextKey::Edit, "name"),
+                (TextKey::Delete, "choice"),
+                (TextKey::Edit, "choice"),
+                (TextKey::Delete, "future"),
+                (TextKey::Edit, "future"),
+            ] {
+                assert!(
+                    library.contains(&format!("{}: {target}", i18n::text(language, key))),
+                    "missing contextual form action in {language:?}: {library:#?}"
+                );
+            }
+
+            app.section = Section::Diagnostics;
+            let diagnostics = focus_labels(&mut app);
+            let open_prefix = format!("{}: ", i18n::text(language, TextKey::Open));
+            let open_actions = diagnostics
+                .iter()
+                .filter(|label| label.starts_with(&open_prefix))
+                .collect::<Vec<_>>();
+            assert_eq!(open_actions.len(), 2, "{language:?}: {diagnostics:#?}");
+            assert_eq!(
+                open_actions.iter().copied().collect::<HashSet<_>>().len(),
+                open_actions.len(),
+                "duplicate diagnostic action names in {language:?}: {diagnostics:#?}"
+            );
+
+            app.section = Section::Profiles;
+            let profiles = focus_labels(&mut app);
+            let override_suffix = format!(": {}", i18n::text(language, TextKey::Override));
+            let overrides = profiles
+                .iter()
+                .filter(|label| label.ends_with(&override_suffix))
+                .collect::<Vec<_>>();
+            assert!(overrides.len() >= 8, "{language:?}: {profiles:#?}");
+            assert_eq!(
+                overrides.iter().copied().collect::<HashSet<_>>().len(),
+                overrides.len(),
+                "duplicate profile override names in {language:?}: {profiles:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_slider_and_value_editor_share_the_visible_accessible_name() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            app.section = Section::Settings;
+            let labels = focus_labels(&mut app);
+            let scale_label = i18n::text(language, TextKey::UiScale);
+            assert_eq!(
+                labels.iter().filter(|label| *label == scale_label).count(),
+                2,
+                "slider and percentage editor must both be named in {language:?}: {labels:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_dialog_blocks_global_navigation_and_editor_shortcuts() {
+        for dialog_kind in 0..8 {
+            let mut app = accessibility_fixture(Language::English);
+            match dialog_kind {
+                0 => app.new_file_dialog = true,
+                1 => app.new_config_dialog = true,
+                2 => {
+                    app.variable_editor = Some(VariableEditor::new(
+                        VariableScope::Global,
+                        "echo",
+                        Language::English,
+                    ));
+                }
+                3 => {
+                    app.form_field_editor = Some(FormFieldEditor {
+                        original_name: None,
+                        name: "field".into(),
+                        field: FormField::default(),
+                    });
+                }
+                4 => app.pending_delete = Some(PendingDelete::Snippet),
+                5 => {
+                    app.pending_restore = Some(PendingRestore {
+                        relative_path: PathBuf::from("match/base.yml"),
+                        backup_path: PathBuf::from("backup/base.yml"),
+                        timestamp: "2026-08-16T12:00:00Z".into(),
+                    });
+                }
+                6 => {
+                    let conflict = conflict_fixture();
+                    app.conflict_dialog = Some(ConflictDialog {
+                        target: ConflictTarget::Match(0),
+                        choices: vec![ResolutionChoice::Local; conflict.plan.conflicts.len()],
+                        conflict,
+                    });
+                }
+                7 => app.confirm_close = true,
+                _ => unreachable!(),
+            }
+            assert!(app.has_open_modal());
+
+            let original_snippet_count = app.files[0].document.matches.len();
+            let modifiers = egui::Modifiers::COMMAND;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1_440.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            for key in [Key::N, Key::Num5] {
+                input.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+
+            let context = egui::Context::default();
+            let mut output = context.run_ui(input, |ui| app.render(ui));
+            output.textures_delta.clear();
+
+            assert_eq!(
+                app.files[0].document.matches.len(),
+                original_snippet_count,
+                "dialog {dialog_kind} allowed Cmd/Ctrl+N to mutate the editor"
+            );
+            assert_eq!(
+                app.section,
+                Section::Library,
+                "dialog {dialog_kind} allowed Cmd/Ctrl+5 to navigate behind it"
+            );
+        }
+    }
+
+    #[test]
+    fn application_dialogs_are_named_grouped_and_actionable() {
+        for language in Language::ALL {
+            let mut app = accessibility_fixture(language);
+            app.new_file_dialog = true;
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::NewMatchFileTitle),
+                &[TextKey::FileName, TextKey::Create, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.new_config_dialog = true;
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::NewProfileTitle),
+                &[TextKey::FileName, TextKey::Create, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.variable_editor =
+                Some(VariableEditor::new(VariableScope::Global, "echo", language));
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::AddVariableTitle),
+                &[
+                    TextKey::VariableName,
+                    TextKey::Kind,
+                    TextKey::FixedValue,
+                    TextKey::Dependencies,
+                    TextKey::SaveVariable,
+                    TextKey::Cancel,
+                ]
+                .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.form_field_editor = Some(FormFieldEditor {
+                original_name: None,
+                name: "field".into(),
+                field: FormField::default(),
+            });
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::FormFieldTitle),
+                &[
+                    TextKey::FieldName,
+                    TextKey::InputType,
+                    TextKey::InitialValue,
+                    TextKey::SaveField,
+                    TextKey::Cancel,
+                ]
+                .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.pending_delete = Some(PendingDelete::Snippet);
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::DeleteConfirmationTitle),
+                &[TextKey::ConfirmDelete, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.pending_restore = Some(PendingRestore {
+                relative_path: PathBuf::from("match/base.yml"),
+                backup_path: PathBuf::from("backup/base.yml"),
+                timestamp: "2026-08-16T12:00:00Z".into(),
+            });
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::RestoreHistoryTitle),
+                &[TextKey::BackupAndRestore, TextKey::Cancel]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+
+            let mut app = accessibility_fixture(language);
+            let conflict = conflict_fixture();
+            app.conflict_dialog = Some(ConflictDialog {
+                target: ConflictTarget::Match(0),
+                choices: vec![ResolutionChoice::Local; conflict.plan.conflicts.len()],
+                conflict,
+            });
+            let conflict_path = "matches[0].replace";
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::ConflictTitle),
+                &[
+                    format!(
+                        "{}: {conflict_path}",
+                        i18n::text(language, TextKey::UseLocal)
+                    ),
+                    format!(
+                        "{}: {conflict_path}",
+                        i18n::text(language, TextKey::UseDisk)
+                    ),
+                    i18n::text(language, TextKey::MergeAndSave).to_owned(),
+                    i18n::text(language, TextKey::Cancel).to_owned(),
+                ],
+            );
+
+            let mut app = accessibility_fixture(language);
+            app.confirm_close = true;
+            assert_modal_accessibility(
+                &mut app,
+                i18n::text(language, TextKey::UnsavedChangesTitle),
+                &[TextKey::DiscardAndExit, TextKey::ReturnToEditor]
+                    .map(|key| i18n::text(language, key).to_owned()),
+            );
+        }
+    }
+
+    #[test]
+    fn dialogs_and_operation_messages_expose_accessible_semantics() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut output = context.run_ui(Default::default(), |ui| {
+            let _ = snippet_card(
+                ui,
+                true,
+                "Snippet title",
+                ":trigger",
+                "Replacement preview",
+                "Plain text",
+            );
+            show_modal(ui, "test-dialog", "Test dialog", |ui| {
+                let _ = ui.button("Confirm");
+            });
+            message_bar(
+                ui,
+                &Message {
+                    kind: MessageKind::Error,
+                    text: "Test error".into(),
+                },
+            );
+        });
+        output.textures_delta.clear();
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("accessibility should be enabled");
+
+        let dialog = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == egui::accesskit::Role::Dialog)
+            .expect("dialog node");
+        assert_eq!(dialog.label(), Some("Test dialog"));
+        assert!(dialog.is_modal());
+
+        let live_error = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.live() == Some(egui::accesskit::Live::Assertive))
+            .expect("assertive error announcement");
+        assert_eq!(live_error.value(), Some("Test error"));
+
+        let snippet = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| {
+                node.label() == Some("Snippet title. :trigger. Plain text. Replacement preview")
+            })
+            .expect("named snippet button");
+        assert_eq!(snippet.role(), egui::accesskit::Role::Button);
+        assert_eq!(snippet.toggled(), Some(egui::accesskit::Toggled::True));
     }
 }

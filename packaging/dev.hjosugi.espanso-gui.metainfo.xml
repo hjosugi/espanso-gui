@@ -3,6 +3,7 @@
   <id>dev.hjosugi.espanso-gui</id>
   <name>Espanso GUI</name>
   <summary>Visual editor for Espanso text-expansion configuration</summary>
+  <summary xml:lang="ja">Espansoテキスト展開設定のビジュアルエディター</summary>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <developer id="github.com/hjosugi">
@@ -14,6 +15,11 @@
       It manages snippets, rich content, variables, forms, global variables,
       backups, imports, and exports without requiring users to hand-edit YAML.
     </p>
+    <p xml:lang="ja">
+      Espanso GUIは、Espanso 2向けの独立した非公式ビジュアルエディターです。
+      YAMLを直接編集せずに、スニペット、リッチコンテンツ、変数、フォーム、
+      グローバル変数、バックアップ、インポート、エクスポートを管理できます。
+    </p>
   </description>
   <launchable type="desktop-id">espanso-gui.desktop</launchable>
   <provides>
@@ -22,14 +28,22 @@
   <url type="homepage">https://github.com/hjosugi/espanso-gui</url>
   <url type="bugtracker">https://github.com/hjosugi/espanso-gui/issues</url>
   <releases>
+    <release version="0.3.0" date="2026-08-16">
+      <description>
+        <p>Completes the bilingual interface, strengthens keyboard and screen-reader semantics, adds responsive accessible layouts and themes, improves cross-file search and sorting, hardens lossless YAML and backup handling, and reinforces release-signing verification.</p>
+        <p xml:lang="ja">日英UI、キーボード／スクリーンリーダー対応、拡大表示とテーマ、全ファイル検索／並べ替えを拡充し、YAML保持、バックアップ、リリース署名検証を強化しました。</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-08-15">
       <description>
         <p>Adds comment-preserving edits, app profiles, three-way conflict resolution, safe HTML composition, localization, accessibility controls, and optional release signing.</p>
+        <p xml:lang="ja">コメントを保持する編集、アプリ別プロファイル、three-way競合解決、安全なHTML編集、ローカライズ、アクセシビリティ設定、任意のリリース署名を追加しました。</p>
       </description>
     </release>
     <release version="0.1.0" date="2026-08-15">
       <description>
         <p>Initial cross-platform preview release.</p>
+        <p xml:lang="ja">最初のクロスプラットフォーム・プレビューリリースです。</p>
       </description>
     </release>
   </releases>

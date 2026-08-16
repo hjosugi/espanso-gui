@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,10 +27,14 @@ jobs:
             formats: wix,nsis
           - name: macos-aarch64
             os: macos-15
-            formats: dmg
+            # Keep the app bundle for post-package signature and ticket checks.
+            # cargo-packager deletes it after a DMG-only build.
+            formats: app,dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify tag matches Cargo version
@@ -130,6 +134,7 @@ jobs:
         if: matrix.name == 'macos-aarch64' && env.SIGNING_ENABLED == 'true'
         shell: bash
         env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -140,20 +145,20 @@ jobs:
           case "${{ matrix.name }}" in
             windows-x86_64)
               if [[ "${SIGNING_ENABLED}" == "true" ]]; then
-                status="Windows: Authenticode signed and SHA-256 timestamped; signatures verified."
+                status="Windows: Authenticode signed and SHA-256 timestamped; signatures verified. / Authenticode署名とSHA-256タイムスタンプを検証済み。"
               else
-                status="Windows: unsigned (optional certificate secrets were not configured)."
+                status="Windows: unsigned (optional certificate secrets were not configured). / 任意の証明書secretが未設定のため未署名。"
               fi
               ;;
             macos-aarch64)
               if [[ "${SIGNING_ENABLED}" == "true" ]]; then
-                status="macOS: Developer ID signed with hardened runtime; app and DMG notarized and stapled."
+                status="macOS: Developer ID signed with hardened runtime; app and DMG notarized and stapled. / Developer ID署名とhardened runtimeを適用し、appとDMGをnotarize・staple済み。"
               else
-                status="macOS: unsigned and not notarized (optional Apple secrets were not configured)."
+                status="macOS: unsigned and not notarized (optional Apple secrets were not configured). / 任意のApple secretが未設定のため未署名・未notarize。"
               fi
               ;;
             *)
-              status="Linux: not code-signed; integrity is covered by the attached SHA-256 checksums."
+              status="Linux: not code-signed; integrity is covered by the attached SHA-256 checksums. / code署名なし。添付SHA-256 checksumで整合性を確認できます。"
               ;;
           esac
           printf '%s\n' "- ${status}" > "dist/signing-status-${{ matrix.name }}.txt"
@@ -179,8 +184,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: package
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           path: release-assets

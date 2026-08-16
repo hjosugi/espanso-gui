@@ -1,5 +1,7 @@
 # Publishing
 
+[English](PUBLISHING.md) | [日本語](ja/PUBLISHING.md)
+
 The public repository is `hjosugi/espanso-gui`. Releases are produced entirely by GitHub Actions from version tags.
 
 ## Intended remote state

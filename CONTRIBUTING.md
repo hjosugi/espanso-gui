@@ -1,5 +1,7 @@
 # Contributing
 
+[English](CONTRIBUTING.md) | [日本語](CONTRIBUTING.ja.md)
+
 Thank you for improving Espanso GUI.
 
 ## Scope and upstream boundary
@@ -27,5 +29,6 @@ Changes that write configuration files must include tests for path containment, 
 - Explain user-data migration or compatibility effects.
 - Do not include real personal Espanso configurations in fixtures.
 - UI copy should remain understandable without prior YAML knowledge.
+- Update Japanese and English together when adding or changing user-facing copy or documentation.
 
 By contributing, you agree that your contribution is licensed under the MIT License.

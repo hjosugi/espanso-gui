@@ -1,5 +1,7 @@
 # Compatibility
 
+[English](COMPATIBILITY.md) | [日本語](ja/COMPATIBILITY.md)
+
 ## Operating systems
 
 | Platform | Build target | Release package |
@@ -21,6 +23,7 @@ Supported visual match content:
 - `html`
 - `image_path`
 - shorthand `form` and `form_fields`
+- `search_terms`, exposed as search keywords and cross-file tags
 
 Supported visual variables:
 

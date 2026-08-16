@@ -16,16 +16,16 @@ pub struct FieldConflict {
 }
 
 impl FieldConflict {
-    pub fn base_summary(&self) -> String {
-        value_summary(self.base.as_ref())
+    pub fn base_summary(&self, missing: &str, unavailable: &str) -> String {
+        value_summary(self.base.as_ref(), missing, unavailable)
     }
 
-    pub fn local_summary(&self) -> String {
-        value_summary(self.local.as_ref())
+    pub fn local_summary(&self, missing: &str, unavailable: &str) -> String {
+        value_summary(self.local.as_ref(), missing, unavailable)
     }
 
-    pub fn disk_summary(&self) -> String {
-        value_summary(self.disk.as_ref())
+    pub fn disk_summary(&self, missing: &str, unavailable: &str) -> String {
+        value_summary(self.disk.as_ref(), missing, unavailable)
     }
 }
 
@@ -186,7 +186,7 @@ fn set_path(root: &mut Value, path: &[PathSegment], replacement: Option<Value>) 
 
 fn path_label(path: &[PathSegment]) -> String {
     if path.is_empty() {
-        return "document".into();
+        return "YAML".into();
     }
     let mut label = String::new();
     for segment in path {
@@ -201,7 +201,7 @@ fn path_label(path: &[PathSegment]) -> String {
                 if !label.is_empty() {
                     label.push('.');
                 }
-                label.push_str(&compact_yaml(key));
+                label.push_str(&compact_yaml(key, "?"));
             }
             PathSegment::Index(index) => label.push_str(&format!("[{index}]")),
         }
@@ -209,13 +209,15 @@ fn path_label(path: &[PathSegment]) -> String {
     label
 }
 
-fn value_summary(value: Option<&Value>) -> String {
-    value.map(compact_yaml).unwrap_or_else(|| "（削除）".into())
+fn value_summary(value: Option<&Value>, missing: &str, unavailable: &str) -> String {
+    value
+        .map(|value| compact_yaml(value, unavailable))
+        .unwrap_or_else(|| missing.into())
 }
 
-fn compact_yaml(value: &Value) -> String {
+fn compact_yaml(value: &Value, unavailable: &str) -> String {
     let text = serde_yaml_ng::to_string(value)
-        .unwrap_or_else(|_| "（表示できません）".into())
+        .unwrap_or_else(|_| unavailable.into())
         .trim()
         .replace('\n', " ");
     let mut characters = text.chars();

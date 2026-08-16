@@ -1,5 +1,7 @@
 # Branding
 
+[English](BRANDING.md) | [日本語](ja/BRANDING.md)
+
 Espanso GUI is an independent project. Its application icon was created specifically for this repository and does not reuse or imitate the Espanso project logo.
 
 The icon depicts a keystroke expanding into a structured template with variable braces. Source assets are provided in `icons/`:

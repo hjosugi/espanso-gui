@@ -1,5 +1,7 @@
 # Security Policy
 
+[English](SECURITY.md) | [日本語](SECURITY.ja.md)
+
 ## Supported versions
 
 Until 1.0, only the latest release receives security fixes.

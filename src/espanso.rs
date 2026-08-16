@@ -1,5 +1,4 @@
 use directories::BaseDirs;
-use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -31,12 +30,6 @@ impl EspansoAction {
             Self::Stop => "stop",
             Self::Restart => "restart",
         }
-    }
-}
-
-impl fmt::Display for EspansoAction {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
     }
 }
 

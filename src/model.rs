@@ -88,6 +88,57 @@ pub struct FormField {
     pub extra: IndexMap<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormFieldKind {
+    Text,
+    Multiline,
+    Choice,
+    List,
+    Unknown(String),
+}
+
+impl FormFieldKind {
+    pub const ALL: [Self; 4] = [Self::Text, Self::Multiline, Self::Choice, Self::List];
+}
+
+impl FormField {
+    pub fn kind(&self) -> FormFieldKind {
+        match self.r#type.as_deref() {
+            Some("choice") => FormFieldKind::Choice,
+            Some("list") => FormFieldKind::List,
+            Some(kind) => FormFieldKind::Unknown(kind.to_owned()),
+            None if self.multiline == Some(true) => FormFieldKind::Multiline,
+            None => FormFieldKind::Text,
+        }
+    }
+
+    pub fn set_kind(&mut self, kind: &FormFieldKind) {
+        match kind {
+            FormFieldKind::Choice => {
+                self.r#type = Some("choice".into());
+                self.multiline = None;
+            }
+            FormFieldKind::List => {
+                self.r#type = Some("list".into());
+                self.multiline = None;
+            }
+            FormFieldKind::Multiline => {
+                self.r#type = None;
+                self.multiline = Some(true);
+                self.values.clear();
+            }
+            FormFieldKind::Text => {
+                self.r#type = None;
+                self.multiline = None;
+                self.values.clear();
+            }
+            FormFieldKind::Unknown(kind) => {
+                self.r#type = Some(kind.clone());
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ConfigProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,16 +229,6 @@ impl ContentKind {
         Self::Form,
     ];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Plain => "テキスト",
-            Self::Markdown => "Markdown",
-            Self::Html => "HTML",
-            Self::Image => "画像",
-            Self::Form => "フォーム",
-        }
-    }
-
     pub fn key(self) -> &'static str {
         match self {
             Self::Plain => "replace",
@@ -203,9 +244,16 @@ impl Snippet {
     pub fn new() -> Self {
         Self {
             trigger: Some(":new".into()),
-            replace: Some("ここに展開するテキストを入力".into()),
-            label: Some("新しいスニペット".into()),
+            replace: Some(String::new()),
             ..Self::default()
+        }
+    }
+
+    pub fn with_template(label: impl Into<String>, replacement: impl Into<String>) -> Self {
+        Self {
+            label: Some(label.into()),
+            replace: Some(replacement.into()),
+            ..Self::new()
         }
     }
 
@@ -283,20 +331,47 @@ impl Snippet {
         self.regex = None;
     }
 
-    pub fn title(&self) -> String {
+    pub fn set_regex_trigger_mode(&mut self, enabled: bool) {
+        if enabled == self.regex.is_some() {
+            return;
+        }
+
+        if enabled {
+            let triggers = self.trigger_list();
+            let regex = match triggers.as_slice() {
+                [] => String::new(),
+                [trigger] => escape_regex_literal(trigger),
+                triggers => format!(
+                    "(?:{})",
+                    triggers
+                        .iter()
+                        .map(|trigger| escape_regex_literal(trigger))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ),
+            };
+            self.trigger = None;
+            self.triggers.clear();
+            self.regex = Some(regex);
+        } else {
+            let regex = self.regex.take().unwrap_or_default();
+            self.set_trigger_list(vec![regex]);
+        }
+    }
+
+    pub fn title(&self) -> Option<String> {
         self.label
             .as_deref()
             .filter(|label| !label.trim().is_empty())
             .map(str::to_string)
             .or_else(|| self.trigger_list().first().cloned())
             .or_else(|| self.regex.clone())
-            .unwrap_or_else(|| "名称未設定".into())
     }
 
     pub fn searchable_text(&self) -> String {
         format!(
             "{} {} {} {}",
-            self.title(),
+            self.title().unwrap_or_default(),
             self.trigger_list().join(" "),
             self.content(),
             self.search_terms.join(" ")
@@ -313,6 +388,23 @@ impl Snippet {
     }
 }
 
+fn escape_regex_literal(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| {
+            if matches!(
+                character,
+                '\\' | '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}'
+            ) {
+                [Some('\\'), Some(character)]
+            } else {
+                [Some(character), None]
+            }
+        })
+        .flatten()
+        .collect()
+}
+
 impl Variable {
     pub fn new(kind: &str) -> Self {
         let mut variable = Self {
@@ -324,24 +416,16 @@ impl Variable {
             "date" => {
                 variable.set_param("format", "%Y-%m-%d");
             }
-            "echo" => {
-                variable.set_param("echo", "値");
-            }
-            "random" => {
-                variable.set_string_list("choices", &["候補1".into(), "候補2".into()]);
-            }
-            "choice" => {
-                variable.set_string_list("values", &["候補1".into(), "候補2".into()]);
-            }
+            "echo" => variable.set_param("echo", ""),
+            "random" => variable.set_string_list("choices", &[]),
+            "choice" => variable.set_string_list("values", &[]),
             "shell" => {
                 variable.set_param("cmd", "echo hello");
             }
             "script" => {
                 variable.set_string_list("args", &["python".into(), "$CONFIG/script.py".into()]);
             }
-            "form" => {
-                variable.set_param("layout", "名前: [[name]]");
-            }
+            "form" => variable.set_param("layout", "[[name]]"),
             _ => {}
         }
         variable
@@ -461,7 +545,26 @@ pub enum DiagnosticLevel {
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
     pub snippet_index: Option<usize>,
-    pub message: String,
+    pub kind: DiagnosticKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticKind {
+    MissingTrigger,
+    DuplicateTrigger {
+        trigger: String,
+        previous_snippet: usize,
+    },
+    EmptyContent,
+    UndefinedVariable {
+        reference: String,
+    },
+    InvalidVariableName {
+        name: String,
+    },
+    MissingVariableKind {
+        name: String,
+    },
 }
 
 impl MatchFile {
@@ -492,7 +595,7 @@ impl MatchFile {
                 diagnostics.push(Diagnostic {
                     level: DiagnosticLevel::Error,
                     snippet_index: Some(index),
-                    message: "トリガーまたは正規表現が必要です".into(),
+                    kind: DiagnosticKind::MissingTrigger,
                 });
             }
             for trigger in trigger_list {
@@ -500,10 +603,10 @@ impl MatchFile {
                     diagnostics.push(Diagnostic {
                         level: DiagnosticLevel::Warning,
                         snippet_index: Some(index),
-                        message: format!(
-                            "トリガー「{trigger}」は{}番目のスニペットでも使われています",
-                            previous + 1
-                        ),
+                        kind: DiagnosticKind::DuplicateTrigger {
+                            trigger,
+                            previous_snippet: previous + 1,
+                        },
                     });
                 }
             }
@@ -511,7 +614,7 @@ impl MatchFile {
                 diagnostics.push(Diagnostic {
                     level: DiagnosticLevel::Warning,
                     snippet_index: Some(index),
-                    message: "展開内容が空です".into(),
+                    kind: DiagnosticKind::EmptyContent,
                 });
             }
             let local_names: HashSet<_> =
@@ -529,7 +632,7 @@ impl MatchFile {
                     diagnostics.push(Diagnostic {
                         level: DiagnosticLevel::Warning,
                         snippet_index: Some(index),
-                        message: format!("変数「{reference}」が定義されていません"),
+                        kind: DiagnosticKind::UndefinedVariable { reference },
                     });
                 }
             }
@@ -552,17 +655,18 @@ fn validate_variable(
         diagnostics.push(Diagnostic {
             level: DiagnosticLevel::Error,
             snippet_index,
-            message: format!(
-                "変数名「{}」には英数字とアンダースコアだけを使用できます",
-                variable.name
-            ),
+            kind: DiagnosticKind::InvalidVariableName {
+                name: variable.name.clone(),
+            },
         });
     }
     if variable.kind.trim().is_empty() {
         diagnostics.push(Diagnostic {
             level: DiagnosticLevel::Error,
             snippet_index,
-            message: format!("変数「{}」の種類が未設定です", variable.name),
+            kind: DiagnosticKind::MissingVariableKind {
+                name: variable.name.clone(),
+            },
         });
     }
 }
@@ -614,6 +718,65 @@ matches:
     }
 
     #[test]
+    fn new_snippet_defaults_are_language_neutral() {
+        let snippet = Snippet::new();
+        assert_eq!(snippet.trigger.as_deref(), Some(":new"));
+        assert_eq!(snippet.content(), "");
+        assert_eq!(snippet.label, None);
+
+        let templated = Snippet::with_template("New snippet", "Enter replacement text here");
+        assert_eq!(templated.label.as_deref(), Some("New snippet"));
+        assert_eq!(templated.content(), "Enter replacement text here");
+    }
+
+    #[test]
+    fn trigger_mode_switches_persist_immediately_without_dropping_text() {
+        let mut snippet = Snippet {
+            triggers: vec![":one".into(), ":two.(*)".into()],
+            replace: Some("value".into()),
+            ..Snippet::default()
+        };
+
+        snippet.set_regex_trigger_mode(true);
+        assert_eq!(snippet.regex.as_deref(), Some("(?::one|:two\\.\\(\\*\\))"));
+        assert!(snippet.trigger.is_none());
+        assert!(snippet.triggers.is_empty());
+
+        let serialized = MatchFile {
+            matches: vec![snippet.clone()],
+            ..MatchFile::default()
+        }
+        .to_yaml()
+        .expect("regex match file should serialize");
+        let restored = MatchFile::from_yaml(&serialized).expect("regex match file should reload");
+        assert_eq!(restored.matches[0].regex, snippet.regex);
+        assert!(restored.matches[0].trigger.is_none());
+        assert!(restored.matches[0].triggers.is_empty());
+
+        snippet.set_regex_trigger_mode(false);
+        assert_eq!(
+            snippet.trigger.as_deref(),
+            Some("(?::one|:two\\.\\(\\*\\))")
+        );
+        assert!(snippet.regex.is_none());
+    }
+
+    #[test]
+    fn form_field_kinds_map_to_espanso_options_and_preserve_unknown_types() {
+        let mut field = FormField::default();
+        field.set_kind(&FormFieldKind::Multiline);
+        assert_eq!(field.multiline, Some(true));
+
+        field.set_kind(&FormFieldKind::Choice);
+        assert_eq!(field.r#type.as_deref(), Some("choice"));
+        assert_eq!(field.multiline, None);
+
+        field.r#type = Some("future_widget".into());
+        assert_eq!(field.kind(), FormFieldKind::Unknown("future_widget".into()));
+        assert_eq!(field.r#type.as_deref(), Some("future_widget"));
+    }
+
+    #[test]
     fn content_kind_switch_keeps_content() {
         let mut snippet = Snippet::new();
         let original = snippet.content().to_string();
@@ -645,13 +808,15 @@ matches:
             ..Variable::default()
         });
         file.matches.push(snippet);
-        let messages: Vec<_> = file
-            .diagnostics()
-            .into_iter()
-            .map(|diagnostic| diagnostic.message)
-            .collect();
-        assert!(messages.iter().any(|message| message.contains("bad-name")));
-        assert!(messages.iter().any(|message| message.contains("missing")));
+        let diagnostics = file.diagnostics();
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            DiagnosticKind::InvalidVariableName { name } if name == "bad-name"
+        )));
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            DiagnosticKind::UndefinedVariable { reference } if reference == "missing"
+        )));
     }
 
     #[test]

@@ -1,42 +1,44 @@
-name: Feature request
-description: Suggest an improvement to Espanso GUI
+name: Feature request / 機能提案
+description: Suggest an improvement to Espanso GUI / Espanso GUIの改善を提案
 title: "[Feature]: "
 labels: [enhancement, triage]
 body:
   - type: markdown
     attributes:
-      value: This project is independent. Requests must be implementable within Espanso GUI and must not require contacting Espanso maintainers.
+      value: |
+        This project is independent. Requests must be implementable within Espanso GUI and must not require contacting Espanso maintainers.
+        本プロジェクトは独立しています。提案はEspanso GUI内で実装でき、Espansoメンテナーへの連絡を必要としないものに限ります。
   - type: textarea
     id: problem
     attributes:
-      label: Problem
-      description: What workflow is difficult today?
+      label: Problem / 問題
+      description: What workflow is difficult today? / 現在どの操作が難しいですか？
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed experience
-      description: Describe the desired user flow, not only the implementation.
+      label: Proposed experience / 希望する体験
+      description: Describe the desired user flow, not only the implementation. / 実装方法だけでなく希望する操作の流れを説明してください。
     validations:
       required: true
   - type: dropdown
     id: platforms
     attributes:
-      label: Platform scope
+      label: Platform scope / 対象プラットフォーム
       multiple: true
-      options: [Windows, macOS, Linux, All platforms]
+      options: [Windows, macOS, Linux, All platforms / 全プラットフォーム]
     validations:
       required: true
   - type: textarea
     id: compatibility
     attributes:
-      label: Espanso configuration impact
-      description: Include sanitized example YAML if relevant.
+      label: Espanso configuration impact / Espanso設定への影響
+      description: Include sanitized example YAML if relevant. / 必要に応じて匿名化したYAML例を含めてください。
   - type: checkboxes
     id: boundary
     attributes:
-      label: Project boundary
+      label: Project boundary / プロジェクト境界
       options:
-        - label: This request can be handled entirely inside Espanso GUI.
+        - label: This request can be handled entirely inside Espanso GUI. / この提案はEspanso GUI内だけで対応できます。
           required: true
