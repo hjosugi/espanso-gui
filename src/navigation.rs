@@ -178,6 +178,7 @@ fn wide_navigation(
                 .inner_margin(Margin::same(theme::PADDING_LG)),
         )
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = theme::SPACE_XS;
             ui.label(
                 RichText::new(i18n::text(language, TextKey::Workspace))
                     .small()
@@ -276,7 +277,7 @@ fn wide_navigation(
                     .id_salt("navigation-footer")
                     .max_rect(footer_rect),
                 |ui| {
-                    ui.spacing_mut().item_spacing.y = f32::from(theme::PADDING_COMPACT);
+                    ui.spacing_mut().item_spacing.y = theme::SPACE_XS;
                     ui.label(
                         RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .small()
