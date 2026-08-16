@@ -156,9 +156,13 @@ pub const FIELD_ROW_MIN_HEIGHT: f32 = 68.0;
 pub const FIELD_LABEL_WIDTH: f32 = 340.0;
 pub const FIELD_CONTROL_MAX_WIDTH: f32 = 380.0;
 pub const FIELD_NAME_WIDTH: f32 = 160.0;
-pub const NAVIGATION_WIDTH: f32 = 312.0;
-pub const NAVIGATION_FOOTER_HEIGHT: f32 =
-    2.0 * CONTROL_HEIGHT + TEXT_SMALL + SPACE_XS + 3.0 * SPACE_SM;
+// Keep enough horizontal room for the longest label/shortcut pair with the
+// different system-font metrics used by Linux, macOS, and Windows.
+pub const NAVIGATION_WIDTH: f32 = 344.0;
+// `CONTROL_HEIGHT` is a minimum: a platform font can make a button taller.
+// Reserve a full cross-platform footer block so the bounded file list cannot
+// push the version, Settings, or About surfaces below the viewport.
+pub const NAVIGATION_FOOTER_HEIGHT: f32 = 200.0;
 pub const COLLECTION_PANEL_MIN_WIDTH: f32 = 200.0;
 pub const COMPACT_DETAIL_MIN_WIDTH: f32 = 320.0;
 pub const COMPACT_SECTION_SELECTOR_WIDTH: f32 = 252.0;

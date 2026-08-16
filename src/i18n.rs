@@ -431,7 +431,7 @@ define_catalog! {
     DisplayName => ("表示名", "Display name"),
     DisplayNameDescription => (
         "Espanso検索バーに表示するラベル",
-        "Label shown in the Espanso search bar"
+        "Label in the Espanso search bar"
     ),
     DisplayNameHint => ("例: 署名（日本語）", "Example: Email signature"),
     Trigger => ("トリガー", "Trigger"),
