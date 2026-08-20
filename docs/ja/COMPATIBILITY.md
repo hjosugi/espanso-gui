@@ -47,7 +47,7 @@ Espanso GUIは`espanso.org/docs`に記載されたEspanso 2設定形式を対象
 - paste／search shortcut
 - form size、clipboard preservation、icon、notification option
 
-## 0.2の既知の制限
+## 現在の既知の制限
 
 - 変更されていないstructured YAML itemとprofile fieldはバイト単位で保持されますが、編集したfragmentはserializeされ、自身の書式が変わる場合があります。以前のファイルは自動backupに保持されます。
 - HTML previewは意図的にtext-onlyで、scriptを実行せずremote resourceも取得しません。最終的なrich-text renderingはEspansoと対象applicationに依存します。

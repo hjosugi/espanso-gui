@@ -47,7 +47,7 @@ Supported visual app-specific configuration:
 - paste and search shortcuts
 - form size, clipboard preservation, icon, and notification options
 
-## Known limitations in 0.2
+## Current known limitations
 
 - Unchanged structured YAML items and profile fields are preserved byte for byte, but an edited fragment is serialized and may change its own formatting. Automatic backups retain the prior file.
 - HTML preview is deliberately text-only and never runs scripts or fetches remote resources; final rich-text rendering depends on Espanso and the target application.

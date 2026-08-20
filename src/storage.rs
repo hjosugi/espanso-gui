@@ -1069,4 +1069,108 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn accessibility_audit_fixture_covers_the_manual_matrix_and_preserves_unknown_data() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/accessibility");
+        let mut files = load_workspace(&root).unwrap();
+        let profiles = load_config_profiles(&root).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(profiles.len(), 2);
+        assert!(root.join("audit-image.svg").is_file());
+
+        let file = &mut files[0];
+        let expected_variable_kinds = [
+            "choice",
+            "clipboard",
+            "date",
+            "echo",
+            "form",
+            "global",
+            "random",
+            "script",
+            "shell",
+        ];
+        let mut global_kinds: Vec<_> = file
+            .document
+            .global_vars
+            .iter()
+            .map(|variable| variable.kind.as_str())
+            .collect();
+        global_kinds.sort_unstable();
+        assert_eq!(global_kinds, expected_variable_kinds);
+
+        let plain = &file.document.matches[0];
+        let mut local_kinds: Vec<_> = plain
+            .vars
+            .iter()
+            .map(|variable| variable.kind.as_str())
+            .collect();
+        local_kinds.sort_unstable();
+        assert_eq!(local_kinds, expected_variable_kinds);
+
+        let mut content_kinds: Vec<_> = file
+            .document
+            .matches
+            .iter()
+            .map(|snippet| snippet.content_kind().key())
+            .collect();
+        content_kinds.sort_unstable();
+        content_kinds.dedup();
+        assert_eq!(
+            content_kinds,
+            ["form", "html", "image_path", "markdown", "replace"]
+        );
+        assert!(
+            file.document
+                .matches
+                .iter()
+                .any(|snippet| snippet.regex.is_some())
+        );
+        assert!(
+            file.document
+                .matches
+                .iter()
+                .any(|snippet| snippet.triggers.len() > 1)
+        );
+
+        let form = file
+            .document
+            .matches
+            .iter()
+            .find(|snippet| snippet.form.is_some())
+            .unwrap();
+        assert_eq!(
+            form.form_fields.get("future").unwrap().kind(),
+            crate::model::FormFieldKind::Unknown("future_widget".into())
+        );
+        assert!(file.document.extra.contains_key("future_file_option"));
+        assert!(plain.extra.contains_key("future_match_option"));
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.profile.extra.contains_key("future_profile_option"))
+        );
+
+        let diagnostics = file.document.diagnostics();
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            crate::model::DiagnosticKind::DuplicateTrigger { .. }
+        )));
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            crate::model::DiagnosticKind::UndefinedVariable { reference }
+                if reference == "audit_missing"
+        )));
+
+        file.document.matches[0].label = Some("Edited audit label".into());
+        file.refresh_raw_from_document().unwrap();
+        assert!(
+            file.raw_yaml
+                .contains("future_match_option: keep-audit-match")
+        );
+        assert!(file.raw_yaml.contains("type: future_widget"));
+        assert!(file.raw_yaml.contains("preserve: keep-audit-file"));
+    }
 }

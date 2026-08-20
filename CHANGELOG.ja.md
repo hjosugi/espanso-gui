@@ -6,6 +6,19 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+## [0.3.1] - 2026-08-20
+
+### 追加
+
+- 対応する全content／variable種類、default／app-specific profile、diagnostic、将来互換の未知YAML値を含む、破棄可能なnative accessibility監査用標準fixtureを追加。
+- production storage codeで監査matrix全体を読み込み、意図した編集後も未知dataを保持することを検証する回帰testを追加。
+- advisory、yanked／unsound crate、license、wildcard dependency、package sourceを検査する`cargo-deny` policyとCI jobを追加。
+
+### 変更
+
+- 再現可能なaccessibility監査の準備、merge-conflictの発生方法、fixture reset、実行を意図しないshell／script例の安全な扱いを日英の手順書へ記載。
+- Rust 1.95互換のtransitive dependencyを更新し、compatibility文書とbug report templateに残っていたversion固定表現を修正。
+
 ## [0.3.0] - 2026-08-16
 
 ### 変更
@@ -85,7 +98,8 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 - CSV入出力、手動スナップショット、Espansoサービス操作。
 - クロスプラットフォームCIとリリースパッケージ作成。
 
-[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...HEAD
+[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hjosugi/espanso-gui/releases/tag/v0.1.0

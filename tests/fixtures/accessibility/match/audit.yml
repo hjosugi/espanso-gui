@@ -1,0 +1,147 @@
+# Canonical anonymous fixture for the native accessibility release audit.
+global_vars:
+  - name: audit_date
+    type: date
+    params:
+      format: "%Y-%m-%d"
+      offset: 86400
+      locale: en-US
+      tz: UTC
+  - name: audit_clipboard
+    type: clipboard
+  - name: audit_echo
+    type: echo
+    params:
+      echo: Global audit value
+  - name: audit_random
+    type: random
+    params:
+      choices: [Alpha, Beta]
+  - name: audit_choice
+    type: choice
+    params:
+      values: [One, Two]
+  - name: audit_shell
+    type: shell
+    params:
+      cmd: echo audit-shell
+      trim: false
+  - name: audit_script
+    type: script
+    params:
+      args: [python, -c, "print('audit-script')"]
+  - name: audit_form
+    type: form
+    params:
+      layout: |
+        Name: [[name]]
+        Choice: [[choice]]
+      fields:
+        name:
+          default: Ada
+        choice:
+          type: choice
+          values: [One, Two]
+  - name: audit_global_reference
+    type: global
+
+matches:
+  - trigger: ":audit"
+    label: Plain audit snippet
+    replace: "Hello {{audit_echo}} / {{local_echo}}"
+    search_terms: [audit, plain]
+    word: true
+    propagate_case: true
+    vars:
+      - name: local_date
+        type: date
+        params:
+          format: "%H:%M"
+          offset: -3600
+      - name: local_clipboard
+        type: clipboard
+      - name: local_echo
+        type: echo
+        params:
+          echo: Local audit value
+      - name: local_random
+        type: random
+        params:
+          choices: [Red, Blue]
+      - name: local_choice
+        type: choice
+        params:
+          values: [Small, Large]
+      - name: local_shell
+        type: shell
+        params:
+          cmd: echo local-audit-shell
+      - name: local_script
+        type: script
+        params:
+          args: [python, -c, "print('local-audit-script')"]
+      - name: local_form
+        type: form
+        params:
+          layout: "Name: [[name]]"
+          fields:
+            name:
+              default: Grace
+      - name: local_global_reference
+        type: global
+    future_match_option: keep-audit-match
+
+  - trigger: ":audit-md"
+    label: Markdown audit snippet
+    markdown: |
+      # Audit heading
+
+      **Bold**, *emphasis*, and [local link](https://example.invalid).
+    paragraph: true
+
+  - trigger: ":audit-html"
+    label: HTML audit snippet
+    html: "<p><strong>Audit</strong> HTML content</p>"
+
+  - trigger: ":audit-image"
+    label: Image audit snippet
+    image_path: audit-image.svg
+
+  - trigger: ":audit-form"
+    label: Form audit snippet
+    form: |
+      Name: [[name]]
+      Details: [[details]]
+      Choice: [[choice]]
+      Items: [[items]]
+      Future: [[future]]
+    form_fields:
+      name:
+        default: Ada
+      details:
+        multiline: true
+        default: Two lines
+      choice:
+        type: choice
+        values: [One, Two]
+      items:
+        type: list
+        values: [Alpha, Beta]
+      future:
+        type: future_widget
+        future_field_option: keep-audit-field
+
+  - regex: ":audit-(?P<value>.*)"
+    label: Regular expression audit snippet
+    replace: "Captured {{value}}"
+
+  - triggers: [":audit-many", ":audit-alias"]
+    label: Multiple trigger audit snippet
+    replace: Multiple trigger replacement
+
+  - trigger: ":audit"
+    label: Duplicate and undefined diagnostic
+    replace: "Undefined variable: {{audit_missing}}"
+
+future_file_option:
+  preserve: keep-audit-file

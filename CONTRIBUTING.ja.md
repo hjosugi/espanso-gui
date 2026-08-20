@@ -20,6 +20,15 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
+依存関係を変更する場合は、既知のadvisory、license、package sourceに関する
+リポジトリポリシーも通過する必要があります。`cargo-deny`を一度導入してから、
+次を実行してください。
+
+```sh
+cargo install cargo-deny --locked
+cargo deny --locked check
+```
+
 設定ファイルを書き込む変更には、パス範囲、競合処理、復元についてのテストが必要です。新しい構造化YAMLフィールドでは、未知のオプションを暗黙に失わないよう`#[serde(flatten)]`または同等の処理を使用してください。
 
 ## Pull Request

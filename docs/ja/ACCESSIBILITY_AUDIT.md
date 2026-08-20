@@ -17,12 +17,16 @@ release candidateごとに1行を記入します。`Pass`は、以下のflowを�
 ## 準備
 
 1. 公開予定のrelease candidateと同一のbuildを作成またはinstallします。
-2. 次を含む破棄可能なEspanso設定を用意します。
-   - plain、Markdown、HTML、image、formのmatch
+2. `tests/fixtures/accessibility/`をrepository外の新しい破棄可能なdirectoryへcopyし、
+   そのcopyをEspanso GUIのconfiguration folderとして選択します。repository内のfixtureを
+   直接編集しないでください。標準fixtureには次が含まれます。
+   - plain、Markdown、HTML、image、form、regular-expression、multi-triggerのmatch
    - 対応する全種類のlocal／global variable
    - `default.yml`と1つのapp-specific profile
    - diagnostic確認用の意図的なduplicate triggerとundefined variable
-   - preservation確認用の未知YAML fieldと未知form-field `type`
+   - preservation確認用の未知file、match、profile、form-field、form-field `type`の値
+   shellとscriptの例は編集中には実行されません。copyしたcommandを確認して信頼できる場合を除き、
+   audit中にtriggerしないでください。
 3. OS display scaling、desktop／session type、支援技術version、app version、commitを上表へ記録します。
 4. native audit前に自動baselineを実行します。
 
@@ -31,6 +35,10 @@ release candidateごとに1行を記入します。`Pass`は、以下のflowを�
    cargo test --all-targets
    cargo clippy --all-targets -- -D warnings
    ```
+
+merge-conflict dialogを確認するには、Espanso GUIで同じsnippetを編集した後、copyした
+`match/audit.yml`を外部から変更してappでsaveします。各platform passの後にcopyしたfixtureを
+元へ戻し、すべてのtesterが同一byte列から開始するようにしてください。
 
 ## キーボードとフォーカス順
 

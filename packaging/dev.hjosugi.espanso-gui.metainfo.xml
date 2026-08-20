@@ -28,6 +28,12 @@
   <url type="homepage">https://github.com/hjosugi/espanso-gui</url>
   <url type="bugtracker">https://github.com/hjosugi/espanso-gui/issues</url>
   <releases>
+    <release version="0.3.1" date="2026-08-20">
+      <description>
+        <p>Adds a reproducible accessibility-audit fixture with lossless-YAML coverage, enforces dependency policy in CI, and refreshes compatible transitive dependencies.</p>
+        <p xml:lang="ja">再現可能なaccessibility監査fixtureとlossless YAML検証を追加し、CIのdependency policyを導入して互換性のあるtransitive dependencyを更新しました。</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-16">
       <description>
         <p>Completes the bilingual interface, strengthens keyboard and screen-reader semantics, adds responsive accessible layouts and themes, improves cross-file search and sorting, hardens lossless YAML and backup handling, and reinforces release-signing verification.</p>

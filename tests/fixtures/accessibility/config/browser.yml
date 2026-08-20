@@ -1,0 +1,14 @@
+# Canonical app-specific profile for the native accessibility release audit.
+filter_title: Audit Browser
+filter_exec: audit-browser
+filter_class: AuditBrowser
+filter_os: linux
+enable: true
+backend: clipboard
+apply_patch: false
+inject_delay: 50
+key_delay: 10
+preserve_clipboard: false
+show_icon: false
+show_notifications: false
+future_profile_option: keep-audit-browser-profile

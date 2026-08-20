@@ -12,7 +12,7 @@ body:
     id: version
     attributes:
       label: Espanso GUI version / バージョン
-      placeholder: 0.2.0
+      placeholder: Latest release tag or commit SHA / 最新release tagまたはcommit SHA
     validations:
       required: true
   - type: dropdown

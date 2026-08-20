@@ -20,6 +20,14 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
+Dependency changes must also pass the repository policy for known advisories,
+licenses, and package sources. Install `cargo-deny` once, then run:
+
+```sh
+cargo install cargo-deny --locked
+cargo deny --locked check
+```
+
 Changes that write configuration files must include tests for path containment, conflict handling, and recovery. New structured YAML fields should use `#[serde(flatten)]` or equivalent handling so unknown options are not silently discarded.
 
 ## Pull requests

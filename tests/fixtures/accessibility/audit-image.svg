@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" rx="16" fill="#1f6feb" />
+  <circle cx="56" cy="56" r="24" fill="#ffffff" />
+  <path d="M46 56l7 7 14-16" fill="none" stroke="#1f6feb" stroke-width="6" />
+  <text x="32" y="128" fill="#ffffff" font-family="sans-serif" font-size="28">Audit image</text>
+</svg>

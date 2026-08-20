@@ -17,12 +17,16 @@ Fill one row for every release candidate. `Pass` means every flow below was exer
 ## Preparation
 
 1. Build or install the same release candidate that will be published.
-2. Start with a disposable Espanso configuration containing:
-   - plain, Markdown, HTML, image, and form matches;
+2. Copy `tests/fixtures/accessibility/` to a new disposable directory outside
+   the repository, and select that copy as the Espanso GUI configuration folder.
+   Never edit the repository fixture in place. The canonical fixture contains:
+   - plain, Markdown, HTML, image, form, regular-expression, and multi-trigger matches;
    - local and global variables of every supported type;
    - `default.yml` and one app-specific profile;
    - a deliberate duplicate trigger and undefined variable for diagnostics;
-   - one unknown YAML field and one unknown form-field `type` to verify preservation.
+   - unknown file, match, profile, form-field, and form-field-`type` values to verify preservation.
+   The shell and script examples are inert while editing; do not trigger them
+   during the audit unless you have reviewed and trust the copied commands.
 3. Record the OS display scaling, desktop/session type, assistive-technology version, app version, and commit in the table above.
 4. Run the automated baseline before the native audit:
 
@@ -31,6 +35,11 @@ Fill one row for every release candidate. `Pass` means every flow below was exer
    cargo test --all-targets
    cargo clippy --all-targets -- -D warnings
    ```
+
+To exercise the merge-conflict dialog, change the copied
+`match/audit.yml` externally after editing the same snippet in Espanso GUI, then
+save in the app. Restore the copied fixture after each platform pass so every
+tester starts from identical bytes.
 
 ## Keyboard and focus sequence
 

@@ -1,0 +1,19 @@
+# Canonical default profile for the native accessibility release audit.
+enable: true
+backend: auto
+inject_delay: 25
+key_delay: 5
+pre_paste_delay: 30
+paste_shortcut_event_delay: 10
+post_form_delay: 20
+post_search_delay: 15
+paste_shortcut: CTRL+V
+search_shortcut: ALT+SPACE
+search_trigger: off
+preserve_clipboard: true
+show_icon: true
+show_notifications: true
+max_form_width: 900
+max_form_height: 700
+toggle_key: OFF
+future_profile_option: keep-audit-default-profile

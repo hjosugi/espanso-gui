@@ -6,6 +6,19 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-20
+
+### Added
+
+- Added a canonical disposable native-accessibility audit fixture covering every supported content and variable kind, default and app-specific profiles, diagnostics, and forward-compatible unknown YAML values.
+- Added a regression test that loads the complete audit matrix through production storage code and verifies that intentional edits preserve its unknown data.
+- Added a `cargo-deny` policy and CI job for advisories, yanked and unsound crates, licenses, wildcard dependencies, and package sources.
+
+### Changed
+
+- Documented reproducible English and Japanese accessibility-audit setup, merge-conflict preparation, fixture reset, and safe handling of the inert shell and script examples.
+- Refreshed Rust 1.95-compatible transitive dependencies and replaced stale version-specific wording in compatibility documentation and the bug-report template.
+
 ## [0.3.0] - 2026-08-16
 
 ### Changed
@@ -85,7 +98,8 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 - CSV import/export, manual snapshots, and Espanso service controls.
 - Cross-platform CI and release packaging workflows.
 
-[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hjosugi/espanso-gui/releases/tag/v0.1.0
