@@ -40,6 +40,66 @@ merge-conflict dialogを確認するには、Espanso GUIで同じsnippetを編�
 `match/audit.yml`を外部から変更してappでsaveします。各platform passの後にcopyしたfixtureを
 元へ戻し、すべてのtesterが同一byte列から開始するようにしてください。
 
+## native accessibility APIの自動監査
+
+`scripts/native-accessibility-audit.py`は、この手順書のうち聴取を必要としない部分を
+自動化します。buildしたbinaryを破棄可能なfixture copyに対して起動し、支援技術が使える手段、
+つまり合成したkeyboard入力とOSのaccessibility APIだけで観察・操作します。
+
+| プラットフォーム | API（利用するスクリーンリーダー） | キーボード入力 |
+| --- | --- | --- |
+| Linux | AT-SPI 2（Orca） | X11上の`xdotool` |
+| Windows | UI Automation（Narrator） | `keybd_event` |
+| macOS | AX API（VoiceOver） | Quartz keyboard event |
+
+CIはUbuntu、Windows、macOSで最適化buildの後にこれを実行し、成否にかかわらず
+`report.md`と`report.json`を`accessibility-audit-<runner>` artifactとしてuploadします。
+日本語、続いて英語で次を行います。
+
+- <kbd>Cmd/Ctrl</kbd>+<kbd>1</kbd>〜<kbd>5</kbd>で全主要画面を開き、各nodeのrole、名前、
+  focus可否、有効状態、選択状態を記録する
+- 既に訪れたcontrolへfocusが戻るまで<kbd>Tab</kbd>を押し、focusされたcontrolをすべて記録する
+- <kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd>を押し、focusされたcontrolを読む
+- 設定画面の表示言語selectorとその選択肢に対するaccessibility actionだけでUI言語を切り替える
+- **ファイルを追加**をaccessibility actionで実行し、dialog内を<kbd>Tab</kbd>で巡回して
+  <kbd>Esc</kbd>で閉じる
+
+次のいずれかで監査は失敗します。applicationの名前が`Espanso GUI`でない。focus可能で有効な
+controlに名前がない。<kbd>Tab</kbd>が名前のないcontrolへ到達する、名前付きcontrolへ3つ未満しか
+到達しない、一巡しない、または最初ではなく途中のstopへ戻る。focus可能で有効なcontrolへ
+<kbd>Tab</kbd>で一度も到達しない。navigation先が欠けている、または現在の画面が選択状態として
+公開されていない。同じ画面で日本語と英語のfocus可能なcontrol数が異なる。
+<kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd>が名前付き検索fieldをfocusしない。dialogの名前が誤っている、
+focusがdialog外へ出る、または<kbd>Esc</kbd>後も開いたままである。表示言語selectorを
+accessibility actionで操作できない。accessibility actionで選択肢を選んだ後も選択肢一覧が
+開いたままになるなど、失敗ではない観察結果は、人による確認のためのnoteとしてreportに記載されます。
+
+自分で実行する場合は、先に`cargo build --release --locked`でbuildしてから次を実行します。
+
+```sh
+# Linux: X11またはXvfb、AT-SPI、gir1.2-atspi-2.0付きのpython3-gi、xdotool
+dbus-run-session -- xvfb-run -a -s "-screen 0 1600x1000x24" \
+  python3 scripts/native-accessibility-audit.py target/release/espanso-gui
+
+# macOS: 実行するterminalへ先にAccessibility accessを許可する
+python3 -m pip install -r scripts/native-accessibility-audit-requirements.txt
+python3 scripts/native-accessibility-audit.py target/release/espanso-gui
+
+# Windows: %APPDATA%\espansoへ書き込むため、破棄可能なaccountまたはVMでのみ実行する
+py -m pip install -r scripts/native-accessibility-audit-requirements.txt
+py scripts/native-accessibility-audit.py target\release\espanso-gui.exe --allow-default-config-root
+```
+
+すべてのplatformで、scriptは失敗するだけの`espanso` commandを`PATH`の先頭に置き、install済みの
+Espansoを通じて実際のconfigurationを解決しないようにします。LinuxとmacOSではconfiguration
+folderも一時directoryへ移します。Windowsはknown-folder APIでfolderを解決するため、
+`--allow-default-config-root`なしでは実行を拒否し、既存の`%APPDATA%\espanso`も上書きしません。
+`--output`を指定しない場合、reportは`target/accessibility-audit/`へ出力されます。
+
+これは下記の記録のための証拠であり、記録の代わりではありません。音声出力、読み上げ量、
+発音、announcementのtimingは聞いておらず、全platformで全dialogを確認するものでもありません。
+合格したreportをNarrator、VoiceOver、Orcaの`Pass`として記録しないでください。
+
 ## キーボードとフォーカス順
 
 各flowをpointerなしで実行します。すべての手順でfocus indicatorが見えること、visual／declaration orderに従うこと、操作部が不意に飛ばされたり2回訪問されたりしないことを確認します。
@@ -100,6 +160,8 @@ Narrator、VoiceOver、Orcaを有効にして、読み上げとaccessibility ins
 追加のdevelopment build見た目確認では接続済みeditorを最小高の1440×720 checkpointと200%表示で繰り返しました。100%ではファイル一覧だけがスクロールし、「ファイルを追加」、version、「設定」、Aboutは分離したままでした。200%では2つのcompact selectorが1行に収まり、日英の検索placeholderは全体が見え、選択操作部のチェック印を維持し、折り返したtabと最初のeditor surfaceは初期viewport内に残りました。light／dark確認でもeditorの16×12ポイント内側余白と常時表示の高contrast scroll handleを確認しました。その後repositoryのrelease binaryを再buildして分離環境で起動smoke testを行い、最適化済みの全test matrixも合格しました。
 
 これはLinux行の`Pass`ではなく診断上の証拠です。nested X11 harnessでは繰り返すTab navigationを確実にsynthesizeできず、人間のlistenerによる完全なrelease-build flow matrixを実行していません。Windows NarratorとmacOS VoiceOverも未検証です。
+
+2026-09-24に、上記のnative accessibility API自動監査を最適化buildに対してCIで初めて実行しました。Ubuntu 24.04のXvfb上のAT-SPI 2.52、Windows Server 2025のUI Automation、macOS 15のAX APIです。各実行で5つの主要画面と「スニペットファイルを追加」dialogを日本語と英語で確認し、accessibility actionで言語を切り替えました。Linux runnerの1,600ポイント幅の表示ではwide layoutを確認しました。WindowsとmacOSのrunnerは表示幅が1,180ポイントのbreakpointより狭いため、section selectorが1つになるcompact layoutを確認しています。この実行でapplicationの不具合を1件発見し、修正しました。利用できないbutton（Espansoを検出していない状態の開始、停止、再起動、およびその他のdisabledなservice、backup、CSV、file削除、保存の操作）が、AccessKitのfocus／click actionを公開したままでした。AccessKitのAT-SPI adapterはdisabled flagにかかわらずpush buttonを有効として報告するため、Orcaのtreeではこれらが通常のfocus可能なbuttonとして提示され、Tabでは到達しませんでした。現在はどちらのactionも公開しません。UI AutomationとAX APIは以前からdisabledとして報告していました。AT-SPIでは引き続き有効として報告され、これはAccessKit側の変更でしか解決できません。また、以前のX11に関する記録の原因も判明しました。Tab自体は安定して送信できましたが、1つの`xdotool` chordとして送ったCtrl+数字のshortcutは、XKBのmodifier状態が変わる前にtoolkitへ届くことがありました。現在の監査はmodifierを個別に押下したまま送信します。
 
 ## 完了条件
 

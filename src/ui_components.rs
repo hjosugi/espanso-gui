@@ -209,7 +209,39 @@ pub(crate) fn context_button_enabled(
     context: &str,
 ) -> egui::Response {
     let response = ui.add_enabled(enabled, Button::new(visible_label));
-    label_button_with_context(response, visible_label, context)
+    let response = label_button_with_context(response, visible_label, context);
+    withdraw_disabled_actions(ui, &response);
+    response
+}
+
+/// Adds a widget that may be unavailable without offering it to assistive technology as an
+/// operable control while it is disabled.
+pub(crate) fn add_enabled_accessible(
+    ui: &mut Ui,
+    enabled: bool,
+    widget: impl egui::Widget,
+) -> egui::Response {
+    let response = ui.add_enabled(enabled, widget);
+    withdraw_disabled_actions(ui, &response);
+    response
+}
+
+/// Removes the focus and click actions egui still advertises on a disabled widget.
+///
+/// egui never focuses or activates a disabled widget, but it keeps both actions in the
+/// AccessKit node, and AccessKit's AT-SPI adapter reports push buttons as enabled whatever their
+/// disabled flag says. The native audit found Orca offering unavailable Start, Stop, and Restart
+/// buttons as ordinary focusable controls that Tab then skipped. Without the actions every
+/// platform agrees the control cannot be focused or activated; UI Automation and macOS still
+/// read the disabled flag itself.
+pub(crate) fn withdraw_disabled_actions(ui: &Ui, response: &egui::Response) {
+    if response.enabled() {
+        return;
+    }
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.remove_action(egui::accesskit::Action::Focus);
+        node.remove_action(egui::accesskit::Action::Click);
+    });
 }
 
 fn label_button_with_context(

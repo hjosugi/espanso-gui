@@ -1,0 +1,4 @@
+# Accessibility API clients for scripts/native-accessibility-audit.py.
+# Linux uses the distribution's python3-gi and gir1.2-atspi-2.0 packages.
+comtypes==1.4.17; sys_platform == "win32"
+pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"

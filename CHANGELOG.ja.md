@@ -6,6 +6,14 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+### 追加
+
+- 最適化buildを日本語と英語でLinuxのAT-SPI、WindowsのUI Automation、macOSのAX API経由で操作するnative accessibility API監査をCIへ追加。wide／compact両layoutで全主要画面のaccessible name、role、選択状態を確認し、Tab順全体とfocus可能な全controlへの到達性、検索shortcut、accessibility actionによる言語切替、modal dialogのfocus封じ込めを検査して、reportをCI artifactとしてupload。
+
+### 修正
+
+- 利用できないEspanso service、backup、CSV、file削除、保存のbuttonが、支援技術へfocus／click actionを公開しないよう修正。AccessKitのAT-SPI adapterはdisabled flagにかかわらずbuttonを有効として報告するため、OrcaはTabでは到達しないbuttonを通常のfocus可能なbuttonとして提示していた。
+
 ## [0.3.2] - 2026-09-24
 
 ### セキュリティ

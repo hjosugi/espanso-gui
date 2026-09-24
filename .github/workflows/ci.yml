@@ -51,3 +51,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --locked
       - run: cargo build --release --locked
+      - uses: actions/setup-python@v6
+        if: runner.os != 'Linux'
+        with:
+          python-version: "3.13"
+      - name: Install accessibility API clients
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              at-spi2-core dbus-x11 gir1.2-atspi-2.0 libgl1-mesa-dri \
+              libxcursor1 libxi6 libxkbcommon-x11-0 libxrandr2 \
+              mesa-vulkan-drivers python3-gi xdotool xvfb
+          else
+            python -m pip install -r scripts/native-accessibility-audit-requirements.txt
+          fi
+      - name: Audit through the native accessibility API
+        shell: bash
+        run: |
+          case "${RUNNER_OS}" in
+            Linux)
+              dbus-run-session -- xvfb-run -a -s "-screen 0 1600x1000x24" \
+                /usr/bin/python3 scripts/native-accessibility-audit.py \
+                target/release/espanso-gui ;;
+            Windows)
+              python scripts/native-accessibility-audit.py \
+                target/release/espanso-gui.exe --allow-default-config-root ;;
+            macOS)
+              python scripts/native-accessibility-audit.py \
+                target/release/espanso-gui ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: accessibility-audit-${{ matrix.os }}
+          path: target/accessibility-audit
+          if-no-files-found: ignore
