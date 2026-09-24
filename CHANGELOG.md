@@ -6,6 +6,8 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-25
+
 ### Added
 
 - Added a native accessibility-API audit that drives the optimized build in Japanese and English through AT-SPI on Linux, UI Automation on Windows, and the AX API on macOS in CI. It checks every primary view's accessible names, roles, and selection state in both the wide and the compact layout, the complete Tab order and whether every focusable control is reachable, the search shortcut, language switching through accessibility actions, and modal-dialog focus containment, and uploads its reports as CI artifacts.
@@ -117,8 +119,9 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 - CSV import/export, manual snapshots, and Espanso service controls.
 - Cross-platform CI and release packaging workflows.
 
-[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.3.2
+[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.4.0
+[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...3750109
 [0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0

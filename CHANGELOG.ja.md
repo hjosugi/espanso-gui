@@ -6,6 +6,8 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+## [0.4.0] - 2026-09-25
+
 ### 追加
 
 - 最適化buildを日本語と英語でLinuxのAT-SPI、WindowsのUI Automation、macOSのAX API経由で操作するnative accessibility API監査をCIへ追加。wide／compact両layoutで全主要画面のaccessible name、role、選択状態を確認し、Tab順全体とfocus可能な全controlへの到達性、検索shortcut、accessibility actionによる言語切替、modal dialogのfocus封じ込めを検査して、reportをCI artifactとしてupload。
@@ -117,8 +119,9 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 - CSV入出力、手動スナップショット、Espansoサービス操作。
 - クロスプラットフォームCIとリリースパッケージ作成。
 
-[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.3.2
+[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.4.0
+[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...3750109
 [0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0

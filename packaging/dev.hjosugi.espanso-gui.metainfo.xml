@@ -28,6 +28,12 @@
   <url type="homepage">https://github.com/hjosugi/espanso-gui</url>
   <url type="bugtracker">https://github.com/hjosugi/espanso-gui/issues</url>
   <releases>
+    <release version="0.4.0" date="2026-09-25">
+      <description>
+        <p>Audits the native accessibility API on Linux, Windows, and macOS in CI, stops offering unavailable buttons to assistive technology as focusable controls, and includes the dependency maintenance prepared for 0.3.2.</p>
+        <p xml:lang="ja">Linux、Windows、macOSのnative accessibility APIをCIで監査し、利用できないbuttonを支援技術へfocus可能なcontrolとして提示しないよう修正し、0.3.2向けに準備したdependency maintenanceを含めました。</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-09-24">
       <description>
         <p>Updates rustls for RUSTSEC-2026-0285, replaces a yanked chacha20 release, and picks up compatible egui, indexmap, and open bug fixes.</p>
