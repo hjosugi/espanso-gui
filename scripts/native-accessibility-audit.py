@@ -213,17 +213,21 @@ class AtspiBackend(Backend):
 
     @staticmethod
     def enable_accessibility() -> None:
-        """Announce an assistive technology so AccessKit publishes its tree."""
-        subprocess.run(
-            [
-                "gdbus", "call", "--session", "--dest", "org.a11y.Bus",
-                "--object-path", "/org/a11y/bus",
-                "--method", "org.freedesktop.DBus.Properties.Set",
-                "org.a11y.Status", "IsEnabled", "<true>",
-            ],
-            check=True,
-            capture_output=True,
-        )
+        """Announce a screen reader, the way Orca does, so AccessKit publishes its tree.
+
+        AccessKit activates on ScreenReaderEnabled, not on the general IsEnabled flag.
+        """
+        for flag in ("IsEnabled", "ScreenReaderEnabled"):
+            subprocess.run(
+                [
+                    "gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+                    "--object-path", "/org/a11y/bus",
+                    "--method", "org.freedesktop.DBus.Properties.Set",
+                    "org.a11y.Status", flag, "<true>",
+                ],
+                check=True,
+                capture_output=True,
+            )
 
     def pump(self) -> None:
         context = self.glib.MainContext.default()
@@ -257,7 +261,16 @@ class AtspiBackend(Backend):
                     self.window_id = window.stdout.split()[0]
                     return
             time.sleep(0.5)
-        raise TimeoutError("the application did not appear in the AT-SPI registry")
+        desktop = self.atspi.get_desktop(0)
+        seen = []
+        for index in range(desktop.get_child_count()):
+            app = desktop.get_child_at_index(index)
+            if app is not None:
+                seen.append(f"{app.get_name()!r} (pid {app.get_process_id()})")
+        raise TimeoutError(
+            f"pid {self.pid} did not appear in the AT-SPI registry with an X11 window "
+            f"(registered: {', '.join(seen) or 'none'}; window: {self.window_id or 'none'})"
+        )
 
     def app_name(self) -> str:
         names = [normalize_name(self.app.get_name())]
@@ -368,6 +381,8 @@ class UiaBackend(Backend):
         50032: "window",
         50033: "pane",
     }
+    # The title bar and system menu belong to Windows, not to the application's tree.
+    SYSTEM_CHROME = {50010, 50037}
     IS_DIALOG_PROPERTY = 30174
     HEADING_LEVEL_PROPERTY = 30173
     HEADING_LEVEL_NONE = 80050
@@ -469,7 +484,8 @@ class UiaBackend(Backend):
             children = []
             child = self.walker.GetFirstChildElement(element)
             while child:
-                children.append((child, depth + 1, node.in_dialog))
+                if child.CurrentControlType not in self.SYSTEM_CHROME:
+                    children.append((child, depth + 1, node.in_dialog))
                 child = self.walker.GetNextSiblingElement(child)
             stack.extend(reversed(children))
 
@@ -523,6 +539,10 @@ class UiaBackend(Backend):
             )
             if selection is not None:
                 selection.Select()
+                return True
+            toggle = self.pattern(element, lib.UIA_TogglePatternId, lib.IUIAutomationTogglePattern)
+            if toggle is not None:
+                toggle.Toggle()
                 return True
             return False
         return False
@@ -773,25 +793,32 @@ class Driver:
         )
         return self.stable_snapshot(nodes)
 
-    def switch_language(self, language: str) -> bool:
+    def switch_language(self, language: str) -> str | None:
+        """Switch through accessibility actions only; return what failed, or None."""
         current = "ja" if language == "en" else "en"
         self.open_section("5", "SettingsNav", current)
         label = self.text("Language", current)
-        nodes = self.wait_until(
-            lambda nodes: any(n.role == "combo_box" and n.name.startswith(label) for n in nodes)
-        )
-        if not self.backend.activate(lambda n: n.role == "combo_box" and n.name.startswith(label)):
-            return False
+        selector = lambda n: n.role == "combo_box" and n.name.startswith(label)  # noqa: E731
+        self.wait_until(lambda nodes: any(selector(n) for n in nodes))
+        if not self.backend.activate(selector):
+            return f"the '{label}' selector exposes no usable accessibility action"
         target = "English" if language == "en" else "日本語"
-        self.wait_until(lambda nodes: any(n.name == target and n.role != "combo_box" for n in nodes))
+        option = lambda n: n.name == target and n.role != "combo_box"  # noqa: E731
+        nodes = self.wait_until(lambda nodes: any(option(n) for n in nodes))
+        if not any(option(n) for n in nodes):
+            return f"activating '{label}' did not expose the option '{target}'"
         self.settle()
-        self.backend.activate(lambda n: n.name == target and n.role != "combo_box")
+        if not self.backend.activate(option):
+            roles = sorted({n.raw_role for n in nodes if option(n)})
+            return f"the option '{target}' ({', '.join(roles)}) exposes no usable accessibility action"
         # The selector's own label is translated once the new language takes effect.
         expected = self.text("Language", language)
         switched = lambda nodes: any(  # noqa: E731
             n.role == "combo_box" and n.name.startswith(expected) for n in nodes
         )
-        return switched(self.wait_until(switched))
+        if not switched(self.wait_until(switched)):
+            return f"activating '{target}' did not change the interface language"
+        return None
 
     def run(self, report: Report) -> None:
         self.backend.wait_for_app(90)
@@ -799,11 +826,10 @@ class Driver:
         report.app_name = self.backend.app_name()
         for language in LANGUAGES:
             if language != LANGUAGES[0]:
-                report.language_switched = self.switch_language(language)
-                if not report.language_switched:
-                    report.findings.append(
-                        f"{language}: the language selector could not be operated through accessibility actions"
-                    )
+                failure = self.switch_language(language)
+                report.language_switched = failure is None
+                if failure is not None:
+                    report.findings.append(f"{language}: language switch failed: {failure}")
                     return
             self.wait_until(lambda nodes, language=language: self.has_navigation(nodes, language), 30)
             for shortcut, view in SECTIONS:
