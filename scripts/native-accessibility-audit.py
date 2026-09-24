@@ -63,6 +63,7 @@ class Node:
     enabled: bool
     focused: bool = False
     selected: bool | None = None
+    value: str = ""
     in_dialog: bool = False
     depth: int = 0
     key: str = ""
@@ -72,6 +73,8 @@ class Node:
 class ViewPass:
     language: str
     view: str
+    # "wide" with navigation buttons, or "compact" with one section selector.
+    layout: str = ""
     nodes: list[Node] = field(default_factory=list)
     focus: list[Node] = field(default_factory=list)
     # Index of the stop that Tab returned to, or None when it never repeated.
@@ -106,6 +109,22 @@ def load_catalog(source: Path = CATALOG_SOURCE) -> dict[str, dict[str, str]]:
 
 def normalize_name(value: object) -> str:
     return " ".join(str(value or "").split())
+
+
+def section_selector(nodes: list[Node], catalog: dict[str, dict[str, str]], language: str) -> Node | None:
+    """The compact layout's single section selector, when the window is too narrow for buttons."""
+    name = normalize_name(catalog["Workspace"][language])
+    return next((n for n in nodes if n.role == "combo_box" and n.name == name), None)
+
+
+def section_is_open(
+    nodes: list[Node], catalog: dict[str, dict[str, str]], view: str, language: str
+) -> bool:
+    label = normalize_name(catalog[view][language])
+    selector = section_selector(nodes, catalog, language)
+    if selector is not None:
+        return selector.value.startswith(label)
+    return any(n.name.startswith(label) and n.focusable and n.selected for n in nodes)
 
 
 # ---------------------------------------------------------------------------
@@ -256,9 +275,17 @@ class AtspiBackend(Backend):
         selected = any(
             states.contains(flag) for flag in (state.CHECKED, state.PRESSED, state.SELECTED)
         )
+        value = ""
+        try:
+            text = accessible.get_text_iface()
+            if text is not None and role == "combo_box":
+                value = normalize_name(text.get_text(0, text.get_character_count()))
+        except Exception:
+            value = ""
         return Node(
             role=role,
             raw_role=raw_role,
+            value=value,
             name=normalize_name(accessible.get_name()),
             focusable=states.contains(state.FOCUSABLE),
             enabled=states.contains(state.ENABLED) or states.contains(state.SENSITIVE),
@@ -411,10 +438,15 @@ class UiaBackend(Backend):
         )
         if selection is not None:
             selected = bool(selected) or bool(selection.CurrentIsSelected)
+        value = ""
+        value_pattern = self.pattern(element, lib.UIA_ValuePatternId, lib.IUIAutomationValuePattern)
+        if value_pattern is not None:
+            value = normalize_name(value_pattern.CurrentValue)
         runtime = element.GetRuntimeId()
         return Node(
             role=role,
             raw_role=f"{control_type}:{localized}",
+            value=value,
             name=normalize_name(element.CurrentName),
             focusable=bool(element.CurrentIsKeyboardFocusable),
             enabled=bool(element.CurrentIsEnabled),
@@ -460,7 +492,7 @@ class UiaBackend(Backend):
         ctypes = self.ctypes
         user32 = ctypes.windll.user32
         codes = {"ctrl": 0x11, "shift": 0x10, "tab": 0x09, "escape": 0x1B}
-        virtual = [codes.get(key, ord(key.upper())) for key in keys]
+        virtual = [codes[key] if key in codes else ord(key.upper()) for key in keys]
         hwnd = self.window.CurrentNativeWindowHandle
         if hwnd:
             user32.SetForegroundWindow(hwnd)
@@ -515,6 +547,8 @@ class AxBackend(Backend):
         "AXSlider": "slider",
         "AXIncrementor": "spin_button",
         "AXHeading": "heading",
+        "Heading": "heading",
+        "AXScrollBar": "scroll",
         "AXStaticText": "label",
         "AXGroup": "group",
         "AXScrollArea": "scroll",
@@ -523,6 +557,11 @@ class AxBackend(Backend):
         "AXImage": "image",
         "AXLink": "link",
     }
+    # AccessKit lets AX clients set AXFocused on every node, so settability says nothing about
+    # keyboard focus. Treat enabled interactive roles as focusable instead, excluding the
+    # window's own title-bar buttons.
+    INTERACTIVE = {"button", "checkbox", "radio", "text_input", "combo_box", "slider", "spin_button", "link"}
+    WINDOW_BUTTONS = {"AXCloseButton", "AXMinimizeButton", "AXFullScreenButton", "AXZoomButton"}
     KEY_CODES = {
         "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "f": 3,
         "tab": 48, "escape": 53, "cmd": 55, "shift": 56,
@@ -587,17 +626,18 @@ class AxBackend(Backend):
         )
         if not name and role in {"label", "heading"}:
             name = normalize_name(self.attribute(element, "AXValue"))
-        error, settable = self.ax.AXUIElementIsAttributeSettable(element, "AXFocused", None)
         selected_value = self.attribute(element, "AXSelected")
         if selected_value is None and role in {"button", "checkbox", "radio"}:
             value = self.attribute(element, "AXValue")
             selected_value = bool(value) if isinstance(value, (bool, int)) else None
         enabled = self.attribute(element, "AXEnabled")
+        value = self.attribute(element, "AXValue") if role == "combo_box" else None
         return Node(
             role=role,
             raw_role=f"{raw_role}/{subrole}" if subrole else raw_role,
             name=name,
-            focusable=error == 0 and bool(settable),
+            value=normalize_name(value) if isinstance(value, str) else "",
+            focusable=role in self.INTERACTIVE and subrole not in self.WINDOW_BUTTONS,
             enabled=True if enabled is None else bool(enabled),
             focused=bool(self.attribute(element, "AXFocused")),
             selected=None if selected_value is None else bool(selected_value),
@@ -691,6 +731,8 @@ class Driver:
         return nodes
 
     def has_navigation(self, nodes: list[Node], language: str) -> bool:
+        if section_selector(nodes, self.catalog, language) is not None:
+            return True
         label = self.text("Snippets", language)
         return any(node.name.startswith(label) and node.focusable for node in nodes)
 
@@ -725,10 +767,9 @@ class Driver:
         return nodes
 
     def open_section(self, shortcut: str, view: str, language: str) -> list[Node]:
-        label = self.text(view, language)
         self.backend.shortcut(shortcut)
         nodes = self.wait_until(
-            lambda nodes: any(n.name.startswith(label) and n.selected for n in nodes), 10
+            lambda nodes: section_is_open(nodes, self.catalog, view, language), 10
         )
         return self.stable_snapshot(nodes)
 
@@ -745,9 +786,12 @@ class Driver:
         self.wait_until(lambda nodes: any(n.name == target and n.role != "combo_box" for n in nodes))
         self.settle()
         self.backend.activate(lambda n: n.name == target and n.role != "combo_box")
-        expected = self.text("Snippets", language)
-        nodes = self.wait_until(lambda nodes: any(n.name.startswith(expected) for n in nodes))
-        return any(node.name.startswith(expected) for node in nodes)
+        # The selector's own label is translated once the new language takes effect.
+        expected = self.text("Language", language)
+        switched = lambda nodes: any(  # noqa: E731
+            n.role == "combo_box" and n.name.startswith(expected) for n in nodes
+        )
+        return switched(self.wait_until(switched))
 
     def run(self, report: Report) -> None:
         self.backend.wait_for_app(90)
@@ -763,7 +807,9 @@ class Driver:
                     return
             self.wait_until(lambda nodes, language=language: self.has_navigation(nodes, language), 30)
             for shortcut, view in SECTIONS:
-                view_pass = ViewPass(language, view, self.open_section(shortcut, view, language))
+                nodes = self.open_section(shortcut, view, language)
+                layout = "compact" if section_selector(nodes, self.catalog, language) else "wide"
+                view_pass = ViewPass(language, view, layout, nodes)
                 view_pass.focus, view_pass.focus_loop_start = self.tab_walk()
                 report.passes.append(view_pass)
             self.open_section("1", "Snippets", language)
@@ -778,13 +824,19 @@ class Driver:
         add_file = self.text("AddFile", language)
         title = self.text("NewMatchFileTitle", language)
         view = "NewMatchFileDialog"
-        if not self.backend.activate(lambda n: n.name == add_file and n.role == "button"):
+        is_add_file = lambda n: n.name == add_file and n.role == "button"  # noqa: E731
+        if not any(is_add_file(n) for n in self.backend.snapshot()):
+            # The compact layout keeps Add file inside the match-file selector.
+            files = self.text("MatchFiles", language)
+            self.backend.activate(lambda n: n.role == "combo_box" and n.name == files)
+            self.wait_until(lambda nodes: any(is_add_file(n) for n in nodes))
+        if not self.backend.activate(is_add_file):
             report.findings.append(f"{language}/{view}: '{add_file}' could not be activated")
             return
         nodes = self.stable_snapshot(
             self.wait_until(lambda nodes: any(n.role == "dialog" for n in nodes))
         )
-        dialog_pass = ViewPass(language, view, nodes)
+        dialog_pass = ViewPass(language, view, "modal", nodes)
         dialog_pass.focus, dialog_pass.focus_loop_start = self.tab_walk()
         report.passes.append(dialog_pass)
         if not any(n.role == "dialog" and n.name == title for n in nodes):
@@ -834,10 +886,28 @@ def evaluate(report: Report, catalog: dict[str, dict[str, str]], reports_selecti
                 f"{where}: Tab traversal loops back to stop {view_pass.focus_loop_start + 1} "
                 f"('{stop.name}') instead of the first stop, so earlier stops are not reachable again"
             )
+        if view_pass.focus_loop_start is not None:
+            reached = {(stop.role, stop.name) for stop in view_pass.focus}
+            modal = view_pass.view.endswith("Dialog")
+            for node in controls:
+                if (not modal or node.in_dialog) and (node.role, node.name) not in reached:
+                    findings.append(
+                        f"{where}: '{node.name}' ({node.raw_role}) is exposed as focusable "
+                        "but Tab never reaches it"
+                    )
         if view_pass.view.endswith("Dialog"):
             escaped = [stop for stop in view_pass.focus if stop.role != "none" and not stop.in_dialog]
             for stop in escaped:
                 findings.append(f"{where}: focus left the modal dialog to '{stop.name}' ({stop.raw_role})")
+            continue
+        selector = section_selector(view_pass.nodes, catalog, view_pass.language)
+        if selector is not None:
+            current = text(view_pass.view, view_pass.language)
+            if not selector.value.startswith(current):
+                findings.append(
+                    f"{where}: section selector '{selector.name}' exposes the value "
+                    f"'{selector.value}', expected the current section '{current}'"
+                )
             continue
         for _, key in SECTIONS:
             label = text(key, view_pass.language)
@@ -886,15 +956,16 @@ def write_reports(report: Report, output: Path) -> None:
         f"- Language switched with accessibility actions: {'yes' if report.language_switched else 'no'}",
         f"- Result: {'FAIL' if report.findings else 'PASS'}",
         "",
-        "| Language | View | Nodes | Focusable controls | Tab stops | Tab returns to |",
-        "| --- | --- | ---: | ---: | ---: | --- |",
+        "| Language | View | Layout | Nodes | Focusable controls | Tab stops | Tab returns to |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
     ]
     for view_pass in report.passes:
         controls = sum(
             1 for n in view_pass.nodes if n.focusable and n.enabled and n.role not in CONTAINER_ROLES
         )
         lines.append(
-            f"| {view_pass.language} | {view_pass.view} | {len(view_pass.nodes)} | {controls} | "
+            f"| {view_pass.language} | {view_pass.view} | {view_pass.layout} | "
+            f"{len(view_pass.nodes)} | {controls} | "
             f"{len(view_pass.focus)} | "
             + ("never" if view_pass.focus_loop_start is None else f"stop {view_pass.focus_loop_start + 1}")
             + " |"

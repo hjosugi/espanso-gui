@@ -3,8 +3,8 @@ use crate::i18n::{self, Language, TextKey};
 use crate::preferences::{Preferences, format_ui_scale, parse_ui_scale};
 use crate::theme;
 use crate::ui_components::{
-    callout, compact_layout, display_heading, labelled_two_column_field, section_heading,
-    wrapped_path_label,
+    add_enabled_accessible, callout, compact_layout, display_heading, labelled_two_column_field,
+    section_heading, wrapped_path_label,
 };
 use eframe::egui::{self, Button, ComboBox, RichText, Ui};
 use std::path::Path;
@@ -163,8 +163,7 @@ pub(crate) fn espanso_service(
             (TextKey::Stop, EspansoAction::Stop),
             (TextKey::Restart, EspansoAction::Restart),
         ] {
-            if ui
-                .add_enabled(status.installed, Button::new(i18n::text(language, key)))
+            if add_enabled_accessible(ui, status.installed, Button::new(i18n::text(language, key)))
                 .clicked()
             {
                 action = Some(SettingsAction::Espanso(command));
@@ -196,9 +195,7 @@ pub(crate) fn backup_and_migration(
             (can_export, TextKey::ExportCsv, SettingsAction::ExportCsv),
             (can_import, TextKey::ImportCsv, SettingsAction::ImportCsv),
         ] {
-            if ui
-                .add_enabled(enabled, Button::new(i18n::text(language, key)))
-                .clicked()
+            if add_enabled_accessible(ui, enabled, Button::new(i18n::text(language, key))).clicked()
             {
                 action = Some(candidate);
             }
@@ -225,7 +222,7 @@ pub(crate) fn delete_file_action(
     } else {
         Button::new(label)
     };
-    ui.add_enabled(can_delete, button)
+    add_enabled_accessible(ui, can_delete, button)
         .clicked()
         .then_some(SettingsAction::DeleteSelectedFile)
 }
@@ -275,6 +272,50 @@ mod tests {
                 Some(true),
                 "{label:?} should explain its unavailable state as disabled"
             );
+        }
+    }
+
+    #[test]
+    fn unavailable_actions_are_not_offered_to_assistive_technology_as_operable() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::install(&context);
+        let mut output = context.run_ui(Default::default(), |ui| {
+            let _ = espanso_service(ui, Language::English, &EspansoStatus::default());
+            let _ = backup_and_migration(ui, Language::English, false, true, true);
+        });
+        output.textures_delta.clear();
+        let nodes = output
+            .platform_output
+            .accesskit_update
+            .expect("accessibility should be enabled")
+            .nodes;
+        let node = |key| {
+            let label = i18n::text(Language::English, key);
+            nodes
+                .iter()
+                .map(|(_, node)| node)
+                .find(|node| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("{label:?} should be in the tree"))
+        };
+
+        // AT-SPI reports buttons as enabled regardless of this flag, so the actions must go too.
+        for key in [
+            TextKey::Start,
+            TextKey::Stop,
+            TextKey::Restart,
+            TextKey::BackupAll,
+        ] {
+            let control = node(key);
+            assert!(control.is_disabled());
+            assert!(!control.supports_action(egui::accesskit::Action::Focus));
+            assert!(!control.supports_action(egui::accesskit::Action::Click));
+        }
+        for key in [TextKey::RefreshStatus, TextKey::ExportCsv] {
+            let control = node(key);
+            assert!(!control.is_disabled());
+            assert!(control.supports_action(egui::accesskit::Action::Focus));
+            assert!(control.supports_action(egui::accesskit::Action::Click));
         }
     }
 

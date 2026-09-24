@@ -11,3 +11,4 @@ coverage/
 *.msi
 *.deb
 *.rpm
+__pycache__/

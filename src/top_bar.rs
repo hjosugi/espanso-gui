@@ -2,7 +2,7 @@ use crate::espanso::EspansoStatus;
 use crate::i18n::{self, Language, TextKey};
 use crate::navigation::command_shortcut;
 use crate::theme;
-use crate::ui_components::{badge, primary_button};
+use crate::ui_components::{add_enabled_accessible, badge, primary_button};
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +90,7 @@ fn actions(
     let save_response = if can_save {
         ui.add(primary_button(ui, save_label))
     } else {
-        ui.add_enabled(false, Button::new(save_label))
+        add_enabled_accessible(ui, false, Button::new(save_label))
     };
     let mut action = save_response.clicked().then_some(TopBarAction::Save);
 

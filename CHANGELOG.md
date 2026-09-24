@@ -6,6 +6,15 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Added
+
+- Added a native accessibility-API audit that drives the optimized build in Japanese and English through AT-SPI on Linux, UI Automation on Windows, and the AX API on macOS in CI. It checks every primary view's accessible names, roles, and selection state, the complete Tab order and whether every focusable control is reachable, the search shortcut, language switching through accessibility actions, and modal-dialog focus containment, and uploads its reports as CI artifacts.
+
+### Fixed
+
+- Unavailable Espanso service, backup, CSV, file-deletion, and Save buttons no longer advertise focus and click actions to assistive technology. AccessKit's AT-SPI adapter reports buttons as enabled whatever their disabled flag says, so Orca offered them as ordinary focusable buttons that Tab then skipped.
+- Updated the transitive rustls dependency past RUSTSEC-2026-0285 and replaced the yanked chacha20 release.
+
 ## [0.3.1] - 2026-08-20
 
 ### Added

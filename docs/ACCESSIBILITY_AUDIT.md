@@ -41,6 +41,75 @@ To exercise the merge-conflict dialog, change the copied
 save in the app. Restore the copied fixture after each platform pass so every
 tester starts from identical bytes.
 
+## Automated native accessibility-API audit
+
+`scripts/native-accessibility-audit.py` automates the part of this runbook that
+does not need a listener. It launches a built binary against a disposable copy
+of the fixture and then observes and drives it only through what an assistive
+technology can use: synthesized keyboard input and the operating system's
+accessibility API.
+
+| Platform | API (screen reader that consumes it) | Keyboard input |
+| --- | --- | --- |
+| Linux | AT-SPI 2 (Orca) | `xdotool` on X11 |
+| Windows | UI Automation (Narrator) | `keybd_event` |
+| macOS | AX API (VoiceOver) | Quartz keyboard events |
+
+CI runs it after the optimized build on Ubuntu, Windows, and macOS and uploads
+`report.md` and `report.json` as the `accessibility-audit-<runner>` artifact,
+whether or not the audit passes. In Japanese, and then again in English, it:
+
+- opens every primary view with <kbd>Cmd/Ctrl</kbd>+<kbd>1</kbd> through
+  <kbd>5</kbd> and records each node's role, name, focusability, enabled state,
+  and selected state;
+- presses <kbd>Tab</kbd> until focus returns to a control it has already
+  visited, recording every focused control;
+- presses <kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd> and reads the focused control;
+- switches the interface language from Settings using only accessibility
+  actions on the Language selector and its option;
+- activates **Add file** through its accessibility action, walks the dialog
+  with <kbd>Tab</kbd>, and closes it with <kbd>Esc</kbd>.
+
+The audit fails when the application is not named `Espanso GUI`; a focusable,
+enabled control has no name; <kbd>Tab</kbd> reaches an unnamed control, reaches
+fewer than three named controls, never repeats, or loops back to a later stop
+instead of the first; a focusable, enabled control is never reached by
+<kbd>Tab</kbd>; a navigation destination is missing or the current one is not
+exposed as selected; Japanese and English expose a different number of
+focusable controls in the same view; <kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd> does not
+focus the named search field; the dialog has the wrong name, lets focus leave
+it, or stays open after <kbd>Esc</kbd>; or the language selector cannot be
+operated through accessibility actions.
+
+To run it yourself, build first with `cargo build --release --locked`, then:
+
+```sh
+# Linux: X11 or Xvfb, AT-SPI, python3-gi with gir1.2-atspi-2.0, and xdotool
+dbus-run-session -- xvfb-run -a -s "-screen 0 1600x1000x24" \
+  python3 scripts/native-accessibility-audit.py target/release/espanso-gui
+
+# macOS: first grant Accessibility access to the terminal that runs it
+python3 -m pip install -r scripts/native-accessibility-audit-requirements.txt
+python3 scripts/native-accessibility-audit.py target/release/espanso-gui
+
+# Windows: only on a disposable account or VM, because it writes %APPDATA%\espanso
+py -m pip install -r scripts/native-accessibility-audit-requirements.txt
+py scripts/native-accessibility-audit.py target\release\espanso-gui.exe --allow-default-config-root
+```
+
+On every platform the script puts a failing `espanso` command first on `PATH`
+so the application cannot resolve a real configuration through an installed
+Espanso. On Linux and macOS it also redirects the configuration folder into a
+temporary directory. Windows resolves that folder through the known-folder API,
+so the script refuses to run there without `--allow-default-config-root` and
+refuses to overwrite an existing `%APPDATA%\espanso`. Reports go to
+`target/accessibility-audit/` unless `--output` is given.
+
+This is evidence for the rows below, not a replacement for them. It does not
+listen to speech output, verbosity, pronunciation, or announcement timing, it
+does not exercise every dialog on every platform, and a passing report must not
+be recorded as `Pass` for Narrator, VoiceOver, or Orca.
+
 ## Keyboard and focus sequence
 
 Perform each flow without a pointer. At every step, confirm the focus indicator is visible, the order follows the visual/declaration order, and no control is skipped or visited twice unexpectedly.
