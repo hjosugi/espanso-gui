@@ -1111,6 +1111,9 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.rmtree(root, ignore_errors=True)
         write_reports(report, args.output)
         (args.output / "app.log").write_text(app_log, encoding="utf-8")
+    # The report is Japanese as well as English; a Windows console defaults to a code page.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print((args.output / "report.md").read_text(encoding="utf-8"))
     return 1 if report.findings else 0
 
