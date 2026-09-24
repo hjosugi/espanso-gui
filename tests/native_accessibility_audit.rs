@@ -27,6 +27,11 @@ fn test_job() -> Value {
 fn catalog_keys_used_by_script(script: &str) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     for (index, _) in script.match_indices("text(\"") {
+        // Skip other calls that merely end in `text(`, such as `write_text(`.
+        let previous = script[..index].chars().next_back();
+        if previous.is_some_and(|character| character.is_alphanumeric() || character == '_') {
+            continue;
+        }
         let rest = &script[index + "text(\"".len()..];
         let key = rest.split('"').next().expect("closing quote");
         keys.insert(key.to_owned());

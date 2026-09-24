@@ -711,12 +711,26 @@ class Driver:
             stops.append(focused)
         return stops, None
 
+    def stable_snapshot(self, nodes: list[Node], timeout: float = 10.0) -> list[Node]:
+        """Wait until two consecutive snapshots agree, so lazily built rows are included."""
+        deadline = time.monotonic() + timeout
+        signature = [(n.role, n.name, n.focusable, n.enabled) for n in nodes]
+        while time.monotonic() < deadline:
+            self.settle()
+            current = self.backend.snapshot()
+            current_signature = [(n.role, n.name, n.focusable, n.enabled) for n in current]
+            if current_signature == signature:
+                return current
+            nodes, signature = current, current_signature
+        return nodes
+
     def open_section(self, shortcut: str, view: str, language: str) -> list[Node]:
         label = self.text(view, language)
         self.backend.shortcut(shortcut)
-        return self.wait_until(
+        nodes = self.wait_until(
             lambda nodes: any(n.name.startswith(label) and n.selected for n in nodes), 10
         )
+        return self.stable_snapshot(nodes)
 
     def switch_language(self, language: str) -> bool:
         current = "ja" if language == "en" else "en"
@@ -767,7 +781,9 @@ class Driver:
         if not self.backend.activate(lambda n: n.name == add_file and n.role == "button"):
             report.findings.append(f"{language}/{view}: '{add_file}' could not be activated")
             return
-        nodes = self.wait_until(lambda nodes: any(n.role == "dialog" for n in nodes))
+        nodes = self.stable_snapshot(
+            self.wait_until(lambda nodes: any(n.role == "dialog" for n in nodes))
+        )
         dialog_pass = ViewPass(language, view, nodes)
         dialog_pass.focus, dialog_pass.focus_loop_start = self.tab_walk()
         report.passes.append(dialog_pass)
