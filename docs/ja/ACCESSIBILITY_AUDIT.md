@@ -71,7 +71,8 @@ controlに名前がない。<kbd>Tab</kbd>が名前のないcontrolへ到達す�
 公開されていない。同じ画面で日本語と英語のfocus可能なcontrol数が異なる。
 <kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd>が名前付き検索fieldをfocusしない。dialogの名前が誤っている、
 focusがdialog外へ出る、または<kbd>Esc</kbd>後も開いたままである。表示言語selectorを
-accessibility actionで操作できない。
+accessibility actionで操作できない。accessibility actionで選択肢を選んだ後も選択肢一覧が
+開いたままになるなど、失敗ではない観察結果は、人による確認のためのnoteとしてreportに記載されます。
 
 自分で実行する場合は、先に`cargo build --release --locked`でbuildしてから次を実行します。
 
@@ -159,6 +160,8 @@ Narrator、VoiceOver、Orcaを有効にして、読み上げとaccessibility ins
 追加のdevelopment build見た目確認では接続済みeditorを最小高の1440×720 checkpointと200%表示で繰り返しました。100%ではファイル一覧だけがスクロールし、「ファイルを追加」、version、「設定」、Aboutは分離したままでした。200%では2つのcompact selectorが1行に収まり、日英の検索placeholderは全体が見え、選択操作部のチェック印を維持し、折り返したtabと最初のeditor surfaceは初期viewport内に残りました。light／dark確認でもeditorの16×12ポイント内側余白と常時表示の高contrast scroll handleを確認しました。その後repositoryのrelease binaryを再buildして分離環境で起動smoke testを行い、最適化済みの全test matrixも合格しました。
 
 これはLinux行の`Pass`ではなく診断上の証拠です。nested X11 harnessでは繰り返すTab navigationを確実にsynthesizeできず、人間のlistenerによる完全なrelease-build flow matrixを実行していません。Windows NarratorとmacOS VoiceOverも未検証です。
+
+2026-09-24に、上記のnative accessibility API自動監査を最適化buildに対してCIで初めて実行しました。Ubuntu 24.04のXvfb上のAT-SPI 2.52、Windows Server 2025のUI Automation、macOS 15のAX APIです。各実行で5つの主要画面と「スニペットファイルを追加」dialogを日本語と英語で確認し、accessibility actionで言語を切り替えました。Linux runnerの1,600ポイント幅の表示ではwide layoutを確認しました。WindowsとmacOSのrunnerは表示幅が1,180ポイントのbreakpointより狭いため、section selectorが1つになるcompact layoutを確認しています。この実行でapplicationの不具合を1件発見し、修正しました。利用できないbutton（Espansoを検出していない状態の開始、停止、再起動、およびその他のdisabledなservice、backup、CSV、file削除、保存の操作）が、AccessKitのfocus／click actionを公開したままでした。AccessKitのAT-SPI adapterはdisabled flagにかかわらずpush buttonを有効として報告するため、Orcaのtreeではこれらが通常のfocus可能なbuttonとして提示され、Tabでは到達しませんでした。現在はどちらのactionも公開しません。UI AutomationとAX APIは以前からdisabledとして報告していました。AT-SPIでは引き続き有効として報告され、これはAccessKit側の変更でしか解決できません。また、以前のX11に関する記録の原因も判明しました。Tab自体は安定して送信できましたが、1つの`xdotool` chordとして送ったCtrl+数字のshortcutは、XKBのmodifier状態が変わる前にtoolkitへ届くことがありました。現在の監査はmodifierを個別に押下したまま送信します。
 
 ## 完了条件
 

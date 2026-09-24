@@ -91,6 +91,8 @@ class Report:
     dialog_closed: dict[str, bool] = field(default_factory=dict)
     language_switched: bool = False
     findings: list[str] = field(default_factory=list)
+    # Observations for the human screen-reader pass that are not failures.
+    notes: list[str] = field(default_factory=list)
 
 
 def load_catalog(source: Path = CATALOG_SOURCE) -> dict[str, dict[str, str]]:
@@ -793,7 +795,7 @@ class Driver:
         )
         return self.stable_snapshot(nodes)
 
-    def switch_language(self, language: str) -> str | None:
+    def switch_language(self, language: str, report: Report) -> str | None:
         """Switch through accessibility actions only; return what failed, or None."""
         current = "ja" if language == "en" else "en"
         self.open_section("5", "SettingsNav", current)
@@ -816,8 +818,20 @@ class Driver:
         switched = lambda nodes: any(  # noqa: E731
             n.role == "combo_box" and n.name.startswith(expected) for n in nodes
         )
-        if not switched(self.wait_until(switched)):
+        nodes = self.wait_until(switched)
+        if not switched(nodes):
             return f"activating '{target}' did not change the interface language"
+        if any(option(n) for n in nodes):
+            # A pointer click closes the list; an accessibility action may not. Close it the
+            # way a keyboard user would and leave the observation for the human pass.
+            report.notes.append(
+                f"{language}: the option list stayed open after '{target}' was chosen through an "
+                "accessibility action; Escape closed it"
+            )
+            self.backend.press("escape")
+            nodes = self.wait_until(lambda nodes: not any(option(n) for n in nodes))
+            if any(option(n) for n in nodes):
+                return f"the option list stayed open after '{target}' was chosen and Escape"
         return None
 
     def run(self, report: Report) -> None:
@@ -826,7 +840,7 @@ class Driver:
         report.app_name = self.backend.app_name()
         for language in LANGUAGES:
             if language != LANGUAGES[0]:
-                failure = self.switch_language(language)
+                failure = self.switch_language(language, report)
                 report.language_switched = failure is None
                 if failure is not None:
                     report.findings.append(f"{language}: language switch failed: {failure}")
@@ -998,6 +1012,8 @@ def write_reports(report: Report, output: Path) -> None:
         )
     lines += ["", "## Findings", ""]
     lines += [f"- {finding}" for finding in report.findings] or ["- None"]
+    lines += ["", "## Notes for the human screen-reader pass", ""]
+    lines += [f"- {note}" for note in report.notes] or ["- None"]
     for view_pass in report.passes:
         lines += ["", f"## Tab sequence: {view_pass.language}/{view_pass.view}", ""]
         lines += [

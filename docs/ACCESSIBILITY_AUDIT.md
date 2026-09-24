@@ -79,7 +79,9 @@ exposed as selected; Japanese and English expose a different number of
 focusable controls in the same view; <kbd>Cmd/Ctrl</kbd>+<kbd>F</kbd> does not
 focus the named search field; the dialog has the wrong name, lets focus leave
 it, or stays open after <kbd>Esc</kbd>; or the language selector cannot be
-operated through accessibility actions.
+operated through accessibility actions. Observations that are not failures,
+such as an option list that stays open after an option is chosen through an
+accessibility action, are listed in the report as notes for the human pass.
 
 To run it yourself, build first with `cargo build --release --locked`, then:
 
@@ -170,6 +172,8 @@ A release-build visual pass used a disposable Japanese configuration. At a 1440�
 A follow-up development-build visual pass repeated the connected editor at the 1440×720 minimum-height checkpoint and at 200% scale. At 100%, the bounded file list alone scrolled while Add file, version, Settings, and About remained separated; at 200%, both compact selectors fit on one row, the localized search placeholder remained fully visible, selected controls retained their check marks, and wrapped tabs plus the first editor surface stayed inside the initial viewport. Light and dark passes also confirmed the 16×12-point editor insets and persistent high-contrast scroll handles. The repository release binary was then rebuilt and passed an isolated launch smoke test; the full optimized test matrix also passed.
 
 This remains diagnostic evidence rather than a `Pass` in the Linux row: the nested X11 harness could not reliably synthesize repeated Tab navigation, and it did not exercise the complete release-build flow matrix with a human listener. Windows Narrator and macOS VoiceOver also remain untested.
+
+On 2026-09-24 the automated native accessibility-API audit above first ran in CI against the optimized build: AT-SPI 2.52 on Ubuntu 24.04 under Xvfb, UI Automation on Windows Server 2025, and the AX API on macOS 15. Each run covered the five primary views and the Add snippet file dialog in Japanese and English and switched language through accessibility actions. The Linux runner's 1,600-point display exercised the wide layout; the Windows and macOS runners' displays are narrower than the 1,180-point breakpoint, so those runs exercised the compact layout with its single section selector. The runs found and fixed one application defect: unavailable buttons (Espanso Start, Stop, and Restart without a detected Espanso, and the other disabled service, backup, CSV, file-deletion, and Save actions) still advertised AccessKit focus and click actions. AccessKit's AT-SPI adapter reports push buttons as enabled whatever their disabled flag says, so Orca's tree offered them as ordinary focusable buttons that Tab then skipped. They now expose neither action. UI Automation and the AX API already reported them as disabled; AT-SPI still reports them as enabled, which only an AccessKit change can address. The runs also explain the earlier X11 note: Tab itself was reliable, but a Ctrl+digit shortcut sent as one `xdotool` chord could reach the toolkit before its XKB modifier state changed, so the audit now holds each modifier separately.
 
 ## Exit criteria
 

@@ -28,6 +28,12 @@
   <url type="homepage">https://github.com/hjosugi/espanso-gui</url>
   <url type="bugtracker">https://github.com/hjosugi/espanso-gui/issues</url>
   <releases>
+    <release version="0.3.2" date="2026-09-25">
+      <description>
+        <p>Audits the native accessibility API on Linux, Windows, and macOS in CI, stops offering unavailable buttons to assistive technology as focusable controls, and updates a vulnerable transitive TLS dependency.</p>
+        <p xml:lang="ja">Linux、Windows、macOSのnative accessibility APIをCIで監査し、利用できないbuttonを支援技術へfocus可能なcontrolとして提示しないよう修正し、脆弱性のあるtransitive TLS dependencyを更新しました。</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-08-20">
       <description>
         <p>Adds a reproducible accessibility-audit fixture with lossless-YAML coverage, enforces dependency policy in CI, and refreshes compatible transitive dependencies.</p>
