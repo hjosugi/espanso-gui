@@ -6,6 +6,17 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-24
+
+### Security
+
+- Updated `rustls` to 0.23.45 for RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted across encryption-level boundaries); it is used by the `egui_extras` HTTP image loader.
+
+### Changed
+
+- Replaced the yanked `chacha20` 0.10.1 with 0.10.2, restoring the `cargo-deny` dependency policy.
+- Updated `eframe`, `egui_extras`, and the rest of the egui family to 0.36.2, `indexmap` to 2.14.2, and `open` to 5.4.4.
+
 ## [0.3.1] - 2026-08-20
 
 ### Added
@@ -98,7 +109,8 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 - CSV import/export, manual snapshots, and Espanso service controls.
 - Cross-platform CI and release packaging workflows.
 
-[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/hjosugi/espanso-gui/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0

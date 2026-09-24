@@ -6,6 +6,17 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+## [0.3.2] - 2026-09-24
+
+### セキュリティ
+
+- RUSTSEC-2026-0285（TLS 1.3のhandshake messageがencryption levelの境界をまたいで受理される問題）に対応するため、`egui_extras`のHTTP image loaderで使用される`rustls`を0.23.45へ更新。
+
+### 変更
+
+- yankされた`chacha20` 0.10.1を0.10.2へ置き換え、`cargo-deny` dependency policyを復旧。
+- `eframe`、`egui_extras`、その他のegui関連crateを0.36.2、`indexmap`を2.14.2、`open`を5.4.4へ更新。
+
 ## [0.3.1] - 2026-08-20
 
 ### 追加
@@ -98,7 +109,8 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 - CSV入出力、手動スナップショット、Espansoサービス操作。
 - クロスプラットフォームCIとリリースパッケージ作成。
 
-[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...HEAD
+[未リリース]: https://github.com/hjosugi/espanso-gui/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/hjosugi/espanso-gui/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/hjosugi/espanso-gui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/hjosugi/espanso-gui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hjosugi/espanso-gui/compare/v0.1.0...v0.2.0
