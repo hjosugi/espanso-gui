@@ -50,6 +50,7 @@ SECTIONS = (
 # Roles that are containers or the application itself rather than controls.
 CONTAINER_ROLES = {"application", "window", "group", "pane", "scroll", "dialog"}
 MAX_TAB_STOPS = 90
+LANGUAGE_SWITCH_ATTEMPTS = 3
 # Pause between a held modifier and the key it modifies.
 KEY_GAP = 0.1
 
@@ -798,12 +799,26 @@ class Driver:
     def switch_language(self, language: str, report: Report) -> str | None:
         """Switch through accessibility actions only; return what failed, or None."""
         current = "ja" if language == "en" else "en"
-        self.open_section("5", "SettingsNav", current)
         label = self.text("Language", current)
         selector = lambda n: n.role == "combo_box" and n.name.startswith(label)  # noqa: E731
-        self.wait_until(lambda nodes: any(selector(n) for n in nodes))
-        if not self.backend.activate(selector):
-            return f"the '{label}' selector exposes no usable accessibility action"
+        # The previous step may still be settling (a dialog or popup that has just closed), and
+        # an element can go stale between the tree walk and the action. Neither is a defect, so
+        # retry from a clean state a few times before reporting which step failed.
+        failure = None
+        for _ in range(LANGUAGE_SWITCH_ATTEMPTS):
+            self.open_section("5", "SettingsNav", current)
+            nodes = self.wait_until(lambda nodes: any(selector(n) for n in nodes))
+            if not any(selector(n) for n in nodes):
+                failure = f"Settings never exposed the '{label}' selector"
+            elif self.backend.activate(selector):
+                failure = None
+                break
+            else:
+                failure = f"the '{label}' selector exposes no usable accessibility action"
+            self.backend.press("escape")
+            self.settle(2)
+        if failure is not None:
+            return failure
         target = "English" if language == "en" else "日本語"
         option = lambda n: n.name == target and n.role != "combo_box"  # noqa: E731
         nodes = self.wait_until(lambda nodes: any(option(n) for n in nodes))
