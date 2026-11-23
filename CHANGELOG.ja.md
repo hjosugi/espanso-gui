@@ -15,6 +15,10 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 - メンテナンスが終了した`chrono`（RUSTSEC-2026-0543）を、backupのtimestamp用途で`jiff`へ置き換え。backup folder名はUTCの`YYYYMMDDTHHMMSS.mmmZ`形式のままで、既存のbackup履歴も従来どおり新しい順に並ぶ。
 - yankされた`async-executor` 1.14.0と`clipboard-win` 5.4.1を1.14.1と5.4.3へ置き換え、`cargo-deny` dependency policyを復旧。
 
+### 修正
+
+- キー入力の全体が描画の遅い1フレームに収まったとき、Cmd／Ctrl shortcut（`1`〜`5`で画面切替、`F`、`N`、`S`）が無視される問題を修正。各shortcutは、そのkey event自身が持つmodifierで判定するようになり、素早いキー入力が失われなくなった。
+
 ## [0.4.0] - 2026-09-25
 
 ### 追加
