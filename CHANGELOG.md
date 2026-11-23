@@ -12,6 +12,7 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ### Changed
 
+- Replaced the unmaintained `chrono` (RUSTSEC-2026-0543) with `jiff` for backup timestamps. Backup folders keep the same UTC `YYYYMMDDTHHMMSS.mmmZ` names, so existing backup history still lists newest first.
 - Replaced the yanked `async-executor` 1.14.0 and `clipboard-win` 5.4.1 with 1.14.1 and 5.4.3, restoring the `cargo-deny` dependency policy.
 
 ## [0.4.0] - 2026-09-25
