@@ -2,7 +2,8 @@ use crate::i18n::{self, Language, TextKey};
 use crate::model::ConfigProfile;
 use crate::theme;
 use crate::ui_components::{
-    callout, labelled_two_column_field, section_heading, singleline_text_edit,
+    callout, expose_combo_box_expansion, labelled_two_column_field, section_heading,
+    singleline_text_edit,
 };
 use eframe::egui::{self, ComboBox, ScrollArea, Ui};
 
@@ -65,6 +66,7 @@ pub(crate) fn visual_editor(
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.labelled_by(label_id);
                 },
             );
@@ -194,6 +196,7 @@ fn app_filter_controls(ui: &mut Ui, language: Language, profile: &mut ConfigProf
                         ui.selectable_value(&mut profile.filter_os, Some(value.into()), value);
                     }
                 });
+            expose_combo_box_expansion(ui, &response.response);
             response.response.labelled_by(label_id);
         },
     );
@@ -322,7 +325,7 @@ fn override_checkbox(
     let accessible_label = format!("{field_label}: {visible_label}");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Checkbox,
+            egui::Role::CheckBox,
             ui.is_enabled(),
             *overridden,
             accessible_label.clone(),
@@ -350,6 +353,7 @@ fn optional_bool_field(
                 ui.selectable_value(value, Some(true), i18n::text(language, TextKey::Enabled));
                 ui.selectable_value(value, Some(false), i18n::text(language, TextKey::Disabled));
             });
+        expose_combo_box_expansion(ui, &response.response);
         response.response.labelled_by(label_id);
     });
 }

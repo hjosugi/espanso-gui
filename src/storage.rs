@@ -5,7 +5,7 @@ use crate::{
     model::{ConfigProfile, MatchFile, Snippet},
 };
 use atomic_write_file::AtomicWriteFile;
-use chrono::Utc;
+use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::fs;
@@ -879,7 +879,13 @@ fn milliseconds_since_epoch(value: SystemTime) -> u64 {
 }
 
 fn timestamp() -> String {
-    Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string()
+    format_timestamp(Timestamp::now())
+}
+
+/// Backup folders are named with this UTC layout and listed newest first by
+/// comparing the names, so it has to stay fixed-width and zero-padded.
+fn format_timestamp(instant: Timestamp) -> String {
+    instant.strftime("%Y%m%dT%H%M%S%.3fZ").to_string()
 }
 
 fn contains_yaml_comments(content: &str) -> bool {
@@ -899,6 +905,19 @@ mod tests {
             hash(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn timestamps_keep_the_sortable_utc_millisecond_layout() {
+        let before_midnight: Timestamp = "2026-01-01T08:59:59.9996+09:00".parse().unwrap();
+        assert_eq!(format_timestamp(before_midnight), "20251231T235959.999Z");
+
+        let padded: Timestamp = "2026-03-04T05:06:07Z".parse().unwrap();
+        assert_eq!(format_timestamp(padded), "20260304T050607.000Z");
+
+        let current = timestamp();
+        assert_eq!(current.len(), "20260304T050607.000Z".len());
+        assert!(current.as_str() > "20260304T050607.000Z");
     }
 
     #[test]

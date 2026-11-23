@@ -6,6 +6,20 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Security
+
+- Updated `pulldown-cmark` to 0.13.6 for RUSTSEC-2026-0414 and RUSTSEC-2026-0433 (exponential event growth and quadratic parsing of wikilinks) and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (extended-attribute functions marking unwritten bytes as initialized). The Markdown preview never enabled wikilinks, so it was not exposed to the parser flaws.
+
+### Changed
+
+- Replaced the unmaintained `chrono` (RUSTSEC-2026-0543) with `jiff` for backup timestamps. Backup folders keep the same UTC `YYYYMMDDTHHMMSS.mmmZ` names, so existing backup history still lists newest first.
+- Replaced the yanked `async-executor` 1.14.0 and `clipboard-win` 5.4.1 with 1.14.1 and 5.4.3, restoring the `cargo-deny` dependency policy.
+- Updated `eframe`, `egui_extras`, and the rest of the egui family to 0.37.0 and `egui_commonmark` to 0.26.0. System clipboard support, which `eframe` now makes optional, stays enabled. Assistive technology now sees panels as panes and each option list as a list box that belongs to its selector. Combo boxes now publish whether they are expanded and answer the `Expand` and `Collapse` accessibility actions; without this, Windows UI Automation could not open them after the update, because `egui` 0.37 classes them as expandable instead of invocable but never implemented expansion.
+
+### Fixed
+
+- Fixed Cmd/Ctrl shortcuts (`1`–`5` to switch sections, `F`, `N`, `S`) being ignored when the whole keystroke arrived within a single slow frame. Each shortcut is now matched against the modifiers that its own key event carried, so a quick keystroke is no longer dropped.
+
 ## [0.4.0] - 2026-09-25
 
 ### Added

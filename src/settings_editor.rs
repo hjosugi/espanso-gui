@@ -3,8 +3,8 @@ use crate::i18n::{self, Language, TextKey};
 use crate::preferences::{Preferences, format_ui_scale, parse_ui_scale};
 use crate::theme;
 use crate::ui_components::{
-    add_enabled_accessible, callout, compact_layout, display_heading, labelled_two_column_field,
-    section_heading, wrapped_path_label,
+    add_enabled_accessible, callout, compact_layout, display_heading, expose_combo_box_expansion,
+    labelled_two_column_field, section_heading, wrapped_path_label,
 };
 use eframe::egui::{self, Button, ComboBox, RichText, Ui};
 use std::path::Path;
@@ -44,6 +44,7 @@ pub(crate) fn appearance_and_accessibility(ui: &mut Ui, preferences: &mut Prefer
                         );
                     }
                 });
+            expose_combo_box_expansion(ui, &response.response);
             response.response.labelled_by(label_id);
         },
     );
@@ -99,6 +100,7 @@ pub(crate) fn appearance_and_accessibility(ui: &mut Ui, preferences: &mut Prefer
                         );
                     }
                 });
+            expose_combo_box_expansion(ui, &response.response);
             response.response.labelled_by(label_id);
             if preferences.appearance != previous {
                 theme::apply_appearance(ui.ctx(), preferences.appearance);

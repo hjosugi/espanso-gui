@@ -6,6 +6,20 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+### セキュリティ
+
+- RUSTSEC-2026-0414とRUSTSEC-2026-0433（wikilinkでeventが指数的に増える問題と解析が二乗時間になる問題）に対応するため`pulldown-cmark`を0.13.6へ、RUSTSEC-2026-0486（拡張属性の関数が未書き込みのbyteを初期化済みとして扱う問題）に対応するため`rustix`を1.1.6へ更新。Markdown previewはwikilinkを有効にしていないため、parserの問題の影響は受けていなかった。
+
+### 変更
+
+- メンテナンスが終了した`chrono`（RUSTSEC-2026-0543）を、backupのtimestamp用途で`jiff`へ置き換え。backup folder名はUTCの`YYYYMMDDTHHMMSS.mmmZ`形式のままで、既存のbackup履歴も従来どおり新しい順に並ぶ。
+- yankされた`async-executor` 1.14.0と`clipboard-win` 5.4.1を1.14.1と5.4.3へ置き換え、`cargo-deny` dependency policyを復旧。
+- `eframe`、`egui_extras`、その他のegui関連crateを0.37.0、`egui_commonmark`を0.26.0へ更新。`eframe`で任意機能になったsystem clipboard連携は引き続き有効。支援技術にはpanelがpaneとして、選択肢の一覧がselectorに属するlist boxとして公開されるようになった。コンボボックスは展開状態を公開し、アクセシビリティ操作の`Expand`と`Collapse`に応答する。更新後の`egui` 0.37はコンボボックスをinvoke可能ではなく展開可能な操作部品として扱うが展開を実装していないため、これがないとWindowsのUI Automationから開けなくなる。
+
+### 修正
+
+- キー入力の全体が描画の遅い1フレームに収まったとき、Cmd／Ctrl shortcut（`1`〜`5`で画面切替、`F`、`N`、`S`）が無視される問題を修正。各shortcutは、そのkey event自身が持つmodifierで判定するようになり、素早いキー入力が失われなくなった。
+
 ## [0.4.0] - 2026-09-25
 
 ### 追加

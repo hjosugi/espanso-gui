@@ -15,11 +15,11 @@ use crate::top_bar::{self, TopBarAction};
 use crate::ui_components::{
     callout, centered_content_panel, centered_empty_state, centered_empty_state_action,
     compact_collection_width, compact_layout, context_button_enabled, context_row_button,
-    context_selectable_value, danger_button, display_heading, labelled_two_column_field,
-    live_message_bar, modal_actions, multiline_text_edit, primary_button,
-    responsive_detail_actions, section_heading, selection_list_row, set_responsive_modal_size,
-    set_responsive_modal_width, show_modal, singleline_text_edit, snippet_card,
-    unambiguous_selectable_value, wrapped_path_label,
+    context_selectable_value, danger_button, display_heading, expose_combo_box_expansion,
+    labelled_two_column_field, live_message_bar, modal_actions, multiline_text_edit,
+    primary_button, responsive_detail_actions, section_heading, selection_list_row,
+    set_responsive_modal_size, set_responsive_modal_width, show_modal, singleline_text_edit,
+    snippet_card, unambiguous_selectable_value, wrapped_path_label,
 };
 use crate::variable_editor::{variable_parameters, variable_summary};
 use crate::yaml_editor;
@@ -639,25 +639,29 @@ impl EspansoGuiApp {
         if self.has_open_modal() {
             return;
         }
-        let (save, new, search, destination) = ui.input(|input| {
-            let command = input.modifiers.command;
-            let destination = if command && input.key_pressed(Key::Num1) {
+        // Match each shortcut against the modifiers its own key event carries. The modifier state
+        // reported for a frame is the state at the end of it, so a stroke that has already
+        // finished by the time the frame runs (a slow frame, or a synthesized stroke) would
+        // otherwise be dropped.
+        let (save, new, search, destination) = ui.input_mut(|input| {
+            let mut command = |key| input.consume_key(egui::Modifiers::COMMAND, key);
+            let destination = if command(Key::Num1) {
                 Some(Section::Library)
-            } else if command && input.key_pressed(Key::Num2) {
+            } else if command(Key::Num2) {
                 Some(Section::Profiles)
-            } else if command && input.key_pressed(Key::Num3) {
+            } else if command(Key::Num3) {
                 Some(Section::Globals)
-            } else if command && input.key_pressed(Key::Num4) {
+            } else if command(Key::Num4) {
                 Some(Section::Diagnostics)
-            } else if command && input.key_pressed(Key::Num5) {
+            } else if command(Key::Num5) {
                 Some(Section::Settings)
             } else {
                 None
             };
             (
-                command && input.key_pressed(Key::S),
-                command && input.key_pressed(Key::N),
-                command && input.key_pressed(Key::F),
+                command(Key::S),
+                command(Key::N),
+                command(Key::F),
                 destination,
             )
         });
@@ -800,6 +804,7 @@ impl EspansoGuiApp {
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.labelled_by(sort_label.id);
                 });
                 ui.add_space(theme::SPACE_XS);
@@ -835,6 +840,7 @@ impl EspansoGuiApp {
                                     );
                                 }
                             });
+                        expose_combo_box_expansion(ui, &response.response);
                         response.response.labelled_by(tag_label.id);
                     });
                     if selected_tag != previous_tag {
@@ -1129,6 +1135,7 @@ impl EspansoGuiApp {
                             );
                         }
                     });
+                expose_combo_box_expansion(ui, &kind_response.response);
                 kind_response.response.labelled_by(label_id);
                 if kind != snippet.content_kind() {
                     snippet.set_content_kind(kind);
@@ -1547,6 +1554,7 @@ impl EspansoGuiApp {
                             i18n::text(language, TextKey::CapitalizeFirst),
                         );
                     });
+                expose_combo_box_expansion(ui, &response.response);
                 response.response.labelled_by(label_id);
                 snippet.uppercase_style = (!style.is_empty()).then_some(style);
             },
@@ -1582,6 +1590,7 @@ impl EspansoGuiApp {
                             i18n::text(language, TextKey::KeyInjection),
                         );
                     });
+                expose_combo_box_expansion(ui, &response.response);
                 response.response.labelled_by(label_id);
                 snippet.force_mode = (!mode.is_empty()).then_some(mode);
             },
@@ -2600,6 +2609,7 @@ impl EspansoGuiApp {
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &kind_response.response);
                     kind_response.response.labelled_by(kind_label.id);
                     if editor.variable.kind != old_kind {
                         let name = editor.variable.name.clone();
@@ -2742,6 +2752,7 @@ impl EspansoGuiApp {
                             ui.selectable_value(&mut kind, candidate, label);
                         }
                     });
+                expose_combo_box_expansion(ui, &kind_response.response);
                 kind_response.response.labelled_by(kind_label.id);
                 if kind != original_kind {
                     editor.field.set_kind(&kind);
@@ -4149,6 +4160,68 @@ max_form_width: 640
         }
     }
 
+    /// Runs one frame in which a whole Ctrl/Cmd+key stroke has already arrived and finished.
+    /// That is what a frame sees when it takes longer than the stroke: the key events carry the
+    /// modifier, but the modifier state at the end of the frame has been released again.
+    fn run_frame_with_finished_stroke(app: &mut EspansoGuiApp, key: Key) {
+        let command = egui::Modifiers::COMMAND;
+        let key_event = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: command,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1_440.0, 900.0),
+            )),
+            events: vec![
+                egui::Event::ModifiersChanged(command),
+                key_event(true),
+                key_event(false),
+                egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+            ],
+            ..Default::default()
+        };
+        let context = egui::Context::default();
+        let mut output = context.run_ui(input, |ui| app.render(ui));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn shortcuts_work_when_the_whole_stroke_arrives_in_one_frame() {
+        for (key, expected) in [
+            (Key::Num1, Section::Library),
+            (Key::Num2, Section::Profiles),
+            (Key::Num3, Section::Globals),
+            (Key::Num4, Section::Diagnostics),
+            (Key::Num5, Section::Settings),
+            (Key::F, Section::Library),
+        ] {
+            let mut app = accessibility_fixture(Language::English);
+            // Start somewhere the shortcut has to leave, so a missed stroke is visible.
+            app.section = if expected == Section::Settings {
+                Section::Diagnostics
+            } else {
+                Section::Settings
+            };
+            run_frame_with_finished_stroke(&mut app, key);
+            assert_eq!(app.section, expected, "Cmd/Ctrl+{key:?} was ignored");
+        }
+
+        let mut app = accessibility_fixture(Language::English);
+        app.section = Section::Library;
+        let original_snippet_count = app.files[0].document.matches.len();
+        run_frame_with_finished_stroke(&mut app, Key::N);
+        assert_eq!(
+            app.files[0].document.matches.len(),
+            original_snippet_count + 1,
+            "Cmd/Ctrl+N was ignored"
+        );
+    }
+
     #[test]
     fn application_dialogs_are_named_grouped_and_actionable() {
         for language in Language::ALL {
@@ -4268,7 +4341,7 @@ max_form_width: 640
     fn dialogs_and_operation_messages_expose_accessible_semantics() {
         let context = egui::Context::default();
         context.enable_accesskit();
-        let mut output = context.run_ui(Default::default(), |ui| {
+        let render = |ui: &mut Ui| {
             let _ = snippet_card(
                 ui,
                 true,
@@ -4287,19 +4360,26 @@ max_form_width: 640
                     text: "Test error".into(),
                 },
             );
-        });
+        };
+        // A modal is sized in an invisible first pass, which is hidden from assistive technology.
+        let mut sizing = context.run_ui(Default::default(), render);
+        sizing.textures_delta.clear();
+        let mut output = context.run_ui(Default::default(), render);
         output.textures_delta.clear();
         let update = output
             .platform_output
             .accesskit_update
             .expect("accessibility should be enabled");
 
-        let dialog = update
+        let dialogs = update
             .nodes
             .iter()
             .map(|(_, node)| node)
-            .find(|node| node.role() == egui::accesskit::Role::Dialog)
-            .expect("dialog node");
+            .filter(|node| node.role() == egui::accesskit::Role::Dialog)
+            .collect::<Vec<_>>();
+        let [dialog] = dialogs.as_slice() else {
+            panic!("expected one dialog node, found {}", dialogs.len());
+        };
         assert_eq!(dialog.label(), Some("Test dialog"));
         assert!(dialog.is_modal());
 

@@ -1,7 +1,7 @@
 use crate::i18n::{self, Language, TextKey};
 use crate::storage::WorkspaceFile;
 use crate::theme;
-use crate::ui_components::{compact_layout, selection_list_row};
+use crate::ui_components::{compact_layout, expose_combo_box_expansion, selection_list_row};
 use eframe::egui::{self, Button, ComboBox, Frame, Margin, RichText, ScrollArea, Ui};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,9 +96,10 @@ fn compact_navigation(
                             ui.close();
                         }
                     });
+                expose_combo_box_expansion(ui, &response.response);
                 response.response.widget_info(|| {
                     let mut info =
-                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, section_name);
+                        egui::WidgetInfo::labeled(egui::Role::ComboBox, true, section_name);
                     info.current_text_value = Some(section_value.to_owned());
                     info
                 });
@@ -143,9 +144,10 @@ fn compact_navigation(
                                 }
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.widget_info(|| {
                         let mut info =
-                            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, file_name);
+                            egui::WidgetInfo::labeled(egui::Role::ComboBox, true, file_name);
                         info.current_text_value = Some(accessible_value.clone());
                         info
                     });

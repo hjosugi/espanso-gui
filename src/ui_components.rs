@@ -74,7 +74,11 @@ pub(crate) fn show_modal(
     content: impl FnOnce(&mut Ui),
 ) -> bool {
     let modal_height = (ui.ctx().content_rect().height() - theme::MODAL_VIEWPORT_GUTTER).max(0.0);
-    let response = Modal::new(Id::new(id)).show(ui.ctx(), |ui| {
+    let modal_id = Id::unique(id);
+    // egui exposes a modal's area, backdrop included, as an unnamed dialog. The dialog that
+    // assistive technology should announce is the titled node below, so keep the area generic.
+    let area = Modal::default_area(modal_id).role(egui::accesskit::Role::GenericContainer);
+    let response = Modal::new(modal_id).area(area).show(ui.ctx(), |ui| {
         ui.push_id((id, "dialog"), |ui| {
             ui.set_max_height(modal_height);
             section_heading(ui, title);
@@ -135,6 +139,41 @@ fn semantic_heading(ui: &mut Ui, text: &str, size: f32, level: usize) -> egui::R
         node.set_level(level);
     });
     response
+}
+
+/// Lets assistive technology open and close a combo box through `Expand` and `Collapse`.
+///
+/// Since egui 0.37 a combo box has the `ComboBox` role, which UI Automation treats as expandable
+/// and no longer as invocable. egui never publishes an expanded state for it and answers only
+/// `Click`, so Windows rejects `Expand` as an invalid operation and no pattern can open the list.
+/// Publish the state, advertise both actions, and answer them. Call it with the combo box
+/// button's response, which is `show_ui(..).response`.
+pub(crate) fn expose_combo_box_expansion(ui: &Ui, button: &egui::Response) {
+    use egui::accesskit::Action;
+
+    let ctx = ui.ctx();
+    let open = egui::ComboBox::is_open(ctx, button.id);
+    ctx.accesskit_node_builder(button.id, |node| {
+        node.set_expanded(open);
+        node.add_action(Action::Expand);
+        node.add_action(Action::Collapse);
+    });
+    let (expand, collapse) = ctx.input(|input| {
+        (
+            input.has_accesskit_action_request(button.id, Action::Expand),
+            input.has_accesskit_action_request(button.id, Action::Collapse),
+        )
+    });
+    // egui has no public way to open or close a combo box, so address its popup the way it does
+    // (`ComboBox::widget_to_popup_id`, which is private). A test pins that this still works.
+    let popup_id = button.id.with("popup");
+    if expand && !open {
+        egui::Popup::open_id(ctx, popup_id);
+        ctx.request_repaint();
+    } else if collapse && open {
+        egui::Popup::close_id(ctx, popup_id);
+        ctx.request_repaint();
+    }
 }
 
 pub(crate) fn display_heading(ui: &mut Ui, text: &str) -> egui::Response {
@@ -252,7 +291,7 @@ fn label_button_with_context(
     let enabled = response.enabled();
     let accessible_label = format!("{visible_label}: {context}");
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible_label.clone())
+        egui::WidgetInfo::labeled(egui::Role::Button, enabled, accessible_label.clone())
     });
     response
 }
@@ -278,7 +317,7 @@ pub(crate) fn context_selectable_value<Value: PartialEq>(
     let accessible_label = format!("{visible_label}: {context}");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             enabled,
             selected,
             accessible_label.clone(),
@@ -304,9 +343,8 @@ pub(crate) fn unambiguous_selectable_value<Value: PartialEq>(
         *current_value = selected_value;
     }
     let enabled = response.enabled();
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
     response
 }
 
@@ -342,7 +380,7 @@ pub(crate) fn selection_list_row(
     let enabled = response.enabled();
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             enabled,
             selected,
             accessible_label.clone(),
@@ -506,7 +544,7 @@ pub(crate) fn snippet_card(
         .join(". ");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             ui.is_enabled(),
             selected,
             accessible_label.clone(),
@@ -937,5 +975,96 @@ mod tests {
 
         assert!(rect.height() >= theme::CONTROL_HEIGHT, "{rect:?}");
         assert!(rect.width() > theme::CONTROL_MIN_WIDTH, "{rect:?}");
+    }
+
+    #[test]
+    fn combo_boxes_publish_their_state_and_answer_expand_and_collapse() {
+        use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+
+        fn run_frame(
+            context: &egui::Context,
+            value: &mut i32,
+            requests: &[(Action, Id)],
+        ) -> (egui::accesskit::TreeUpdate, Id) {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events: requests
+                    .iter()
+                    .map(|(action, id)| {
+                        egui::Event::AccessKitActionRequest(ActionRequest {
+                            action: *action,
+                            target_tree: TreeId::ROOT,
+                            target_node: id.accesskit_id(),
+                            data: None,
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut button = None;
+            let mut output = context.run_ui(input, |ui| {
+                let response = egui::ComboBox::from_id_salt("choices")
+                    .selected_text("One")
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(value, 1, "Two");
+                    });
+                expose_combo_box_expansion(ui, &response.response);
+                button = Some(response.response.id);
+            });
+            output.textures_delta.clear();
+            let update = output
+                .platform_output
+                .accesskit_update
+                .expect("accessibility should be enabled");
+            (update, button.expect("combo box button"))
+        }
+
+        fn combo_node(update: &egui::accesskit::TreeUpdate) -> &egui::accesskit::Node {
+            update
+                .nodes
+                .iter()
+                .map(|(_, node)| node)
+                .find(|node| node.role() == Role::ComboBox)
+                .expect("combo box node")
+        }
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut value = 0;
+
+        let (update, button) = run_frame(&context, &mut value, &[]);
+        let node = combo_node(&update);
+        assert_eq!(node.is_expanded(), Some(false));
+        assert!(node.supports_action(Action::Expand));
+        assert!(node.supports_action(Action::Collapse));
+        assert!(!egui::ComboBox::is_open(&context, button));
+
+        // The request is answered in the frame that carries it; the list shows in the next one.
+        run_frame(&context, &mut value, &[(Action::Expand, button)]);
+        assert!(
+            egui::ComboBox::is_open(&context, button),
+            "Expand did not open the list"
+        );
+        let (update, _) = run_frame(&context, &mut value, &[]);
+        assert_eq!(combo_node(&update).is_expanded(), Some(true));
+        // A new popup is sized in an invisible pass that assistive technology does not see.
+        let (update, _) = run_frame(&context, &mut value, &[]);
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Two"))
+        );
+
+        run_frame(&context, &mut value, &[(Action::Collapse, button)]);
+        assert!(
+            !egui::ComboBox::is_open(&context, button),
+            "Collapse did not close the list"
+        );
+        let (update, _) = run_frame(&context, &mut value, &[]);
+        assert_eq!(combo_node(&update).is_expanded(), Some(false));
     }
 }
