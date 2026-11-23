@@ -401,6 +401,7 @@ class UiaBackend(Backend):
         from comtypes.gen import UIAutomationClient as lib
 
         self.ctypes = ctypes
+        self.com_error = comtypes.COMError
         self.lib = lib
         self.uia = comtypes.client.CreateObject(lib.CUIAutomation, interface=lib.IUIAutomation)
         self.walker = self.uia.RawViewWalker
@@ -410,13 +411,21 @@ class UiaBackend(Backend):
         lib = self.lib
         condition = self.uia.CreatePropertyCondition(lib.UIA_ProcessIdPropertyId, self.pid)
         deadline = time.monotonic() + timeout
+        last_error = None
         while time.monotonic() < deadline:
-            window = self.uia.GetRootElement().FindFirst(lib.TreeScope_Children, condition)
-            if window and self.walker.GetFirstChildElement(window):
-                self.window = window
-                return
+            try:
+                window = self.uia.GetRootElement().FindFirst(lib.TreeScope_Children, condition)
+                if window and self.walker.GetFirstChildElement(window):
+                    self.window = window
+                    return
+            except self.com_error as error:
+                # Searching the desktop asks every top-level window's provider, including the
+                # application's while it is still starting, and UI Automation can time out or
+                # fail for a moment. Keep polling until the deadline, as the other backends do.
+                last_error = error
             time.sleep(0.5)
-        raise TimeoutError("the application window did not appear in UI Automation")
+        detail = f" (last UI Automation error: {last_error})" if last_error else ""
+        raise TimeoutError(f"the application window did not appear in UI Automation{detail}")
 
     def app_name(self) -> str:
         return normalize_name(self.window.CurrentName)
