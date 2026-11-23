@@ -98,7 +98,7 @@ fn compact_navigation(
                     });
                 response.response.widget_info(|| {
                     let mut info =
-                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, section_name);
+                        egui::WidgetInfo::labeled(egui::Role::ComboBox, true, section_name);
                     info.current_text_value = Some(section_value.to_owned());
                     info
                 });
@@ -145,7 +145,7 @@ fn compact_navigation(
                         });
                     response.response.widget_info(|| {
                         let mut info =
-                            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, file_name);
+                            egui::WidgetInfo::labeled(egui::Role::ComboBox, true, file_name);
                         info.current_text_value = Some(accessible_value.clone());
                         info
                     });
