@@ -6,6 +6,14 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Security
+
+- Updated `pulldown-cmark` to 0.13.6 for RUSTSEC-2026-0414 and RUSTSEC-2026-0433 (exponential event growth and quadratic parsing of wikilinks) and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (extended-attribute functions marking unwritten bytes as initialized). The Markdown preview never enabled wikilinks, so it was not exposed to the parser flaws.
+
+### Changed
+
+- Replaced the yanked `async-executor` 1.14.0 and `clipboard-win` 5.4.1 with 1.14.1 and 5.4.3, restoring the `cargo-deny` dependency policy.
+
 ## [0.4.0] - 2026-09-25
 
 ### Added
