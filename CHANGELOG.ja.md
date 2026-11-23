@@ -12,6 +12,7 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ### 変更
 
+- メンテナンスが終了した`chrono`（RUSTSEC-2026-0543）を、backupのtimestamp用途で`jiff`へ置き換え。backup folder名はUTCの`YYYYMMDDTHHMMSS.mmmZ`形式のままで、既存のbackup履歴も従来どおり新しい順に並ぶ。
 - yankされた`async-executor` 1.14.0と`clipboard-win` 5.4.1を1.14.1と5.4.3へ置き換え、`cargo-deny` dependency policyを復旧。
 
 ## [0.4.0] - 2026-09-25
