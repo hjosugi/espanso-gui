@@ -14,7 +14,7 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 
 - Replaced the unmaintained `chrono` (RUSTSEC-2026-0543) with `jiff` for backup timestamps. Backup folders keep the same UTC `YYYYMMDDTHHMMSS.mmmZ` names, so existing backup history still lists newest first.
 - Replaced the yanked `async-executor` 1.14.0 and `clipboard-win` 5.4.1 with 1.14.1 and 5.4.3, restoring the `cargo-deny` dependency policy.
-- Updated `eframe`, `egui_extras`, and the rest of the egui family to 0.37.0 and `egui_commonmark` to 0.26.0. System clipboard support, which `eframe` now makes optional, stays enabled. Assistive technology now sees panels as panes and each option list as a list box that belongs to its selector.
+- Updated `eframe`, `egui_extras`, and the rest of the egui family to 0.37.0 and `egui_commonmark` to 0.26.0. System clipboard support, which `eframe` now makes optional, stays enabled. Assistive technology now sees panels as panes and each option list as a list box that belongs to its selector. Combo boxes now publish whether they are expanded and answer the `Expand` and `Collapse` accessibility actions; without this, Windows UI Automation could not open them after the update, because `egui` 0.37 classes them as expandable instead of invocable but never implemented expansion.
 
 ### Fixed
 

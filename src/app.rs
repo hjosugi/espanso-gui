@@ -15,11 +15,11 @@ use crate::top_bar::{self, TopBarAction};
 use crate::ui_components::{
     callout, centered_content_panel, centered_empty_state, centered_empty_state_action,
     compact_collection_width, compact_layout, context_button_enabled, context_row_button,
-    context_selectable_value, danger_button, display_heading, labelled_two_column_field,
-    live_message_bar, modal_actions, multiline_text_edit, primary_button,
-    responsive_detail_actions, section_heading, selection_list_row, set_responsive_modal_size,
-    set_responsive_modal_width, show_modal, singleline_text_edit, snippet_card,
-    unambiguous_selectable_value, wrapped_path_label,
+    context_selectable_value, danger_button, display_heading, expose_combo_box_expansion,
+    labelled_two_column_field, live_message_bar, modal_actions, multiline_text_edit,
+    primary_button, responsive_detail_actions, section_heading, selection_list_row,
+    set_responsive_modal_size, set_responsive_modal_width, show_modal, singleline_text_edit,
+    snippet_card, unambiguous_selectable_value, wrapped_path_label,
 };
 use crate::variable_editor::{variable_parameters, variable_summary};
 use crate::yaml_editor;
@@ -804,6 +804,7 @@ impl EspansoGuiApp {
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.labelled_by(sort_label.id);
                 });
                 ui.add_space(theme::SPACE_XS);
@@ -839,6 +840,7 @@ impl EspansoGuiApp {
                                     );
                                 }
                             });
+                        expose_combo_box_expansion(ui, &response.response);
                         response.response.labelled_by(tag_label.id);
                     });
                     if selected_tag != previous_tag {
@@ -1133,6 +1135,7 @@ impl EspansoGuiApp {
                             );
                         }
                     });
+                expose_combo_box_expansion(ui, &kind_response.response);
                 kind_response.response.labelled_by(label_id);
                 if kind != snippet.content_kind() {
                     snippet.set_content_kind(kind);
@@ -1551,6 +1554,7 @@ impl EspansoGuiApp {
                             i18n::text(language, TextKey::CapitalizeFirst),
                         );
                     });
+                expose_combo_box_expansion(ui, &response.response);
                 response.response.labelled_by(label_id);
                 snippet.uppercase_style = (!style.is_empty()).then_some(style);
             },
@@ -1586,6 +1590,7 @@ impl EspansoGuiApp {
                             i18n::text(language, TextKey::KeyInjection),
                         );
                     });
+                expose_combo_box_expansion(ui, &response.response);
                 response.response.labelled_by(label_id);
                 snippet.force_mode = (!mode.is_empty()).then_some(mode);
             },
@@ -2604,6 +2609,7 @@ impl EspansoGuiApp {
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &kind_response.response);
                     kind_response.response.labelled_by(kind_label.id);
                     if editor.variable.kind != old_kind {
                         let name = editor.variable.name.clone();
@@ -2746,6 +2752,7 @@ impl EspansoGuiApp {
                             ui.selectable_value(&mut kind, candidate, label);
                         }
                     });
+                expose_combo_box_expansion(ui, &kind_response.response);
                 kind_response.response.labelled_by(kind_label.id);
                 if kind != original_kind {
                     editor.field.set_kind(&kind);

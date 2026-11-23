@@ -2,8 +2,8 @@ use crate::i18n::{self, Language, TextKey};
 use crate::model::{FormField, FormFieldKind, Variable};
 use crate::theme;
 use crate::ui_components::{
-    callout, context_row_button, labelled_two_column_field, multiline_text_edit,
-    singleline_text_edit,
+    callout, context_row_button, expose_combo_box_expansion, labelled_two_column_field,
+    multiline_text_edit, singleline_text_edit,
 };
 use eframe::egui::{self, ComboBox, FontId, Frame, RichText, Ui};
 
@@ -31,6 +31,7 @@ pub(crate) fn variable_parameters(ui: &mut Ui, language: Language, variable: &mu
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.labelled_by(label_id);
                     ui.add(singleline_text_edit(&mut format).hint_text("%Y-%m-%d"))
                         .labelled_by(label_id);
@@ -198,6 +199,7 @@ pub(crate) fn variable_parameters(ui: &mut Ui, language: Language, variable: &mu
                                 );
                             }
                         });
+                    expose_combo_box_expansion(ui, &response.response);
                     response.response.labelled_by(label_id);
                 },
             );
@@ -291,6 +293,7 @@ pub(crate) fn variable_parameters(ui: &mut Ui, language: Language, variable: &mu
                                         ui.selectable_value(&mut kind, candidate, label);
                                     }
                                 });
+                            expose_combo_box_expansion(ui, &response.response);
                             response.response.labelled_by(kind_label.id);
                         });
                         if kind != original_kind {

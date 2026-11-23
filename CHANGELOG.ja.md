@@ -14,7 +14,7 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 - メンテナンスが終了した`chrono`（RUSTSEC-2026-0543）を、backupのtimestamp用途で`jiff`へ置き換え。backup folder名はUTCの`YYYYMMDDTHHMMSS.mmmZ`形式のままで、既存のbackup履歴も従来どおり新しい順に並ぶ。
 - yankされた`async-executor` 1.14.0と`clipboard-win` 5.4.1を1.14.1と5.4.3へ置き換え、`cargo-deny` dependency policyを復旧。
-- `eframe`、`egui_extras`、その他のegui関連crateを0.37.0、`egui_commonmark`を0.26.0へ更新。`eframe`で任意機能になったsystem clipboard連携は引き続き有効。支援技術にはpanelがpaneとして、選択肢の一覧がselectorに属するlist boxとして公開されるようになった。
+- `eframe`、`egui_extras`、その他のegui関連crateを0.37.0、`egui_commonmark`を0.26.0へ更新。`eframe`で任意機能になったsystem clipboard連携は引き続き有効。支援技術にはpanelがpaneとして、選択肢の一覧がselectorに属するlist boxとして公開されるようになった。コンボボックスは展開状態を公開し、アクセシビリティ操作の`Expand`と`Collapse`に応答する。更新後の`egui` 0.37はコンボボックスをinvoke可能ではなく展開可能な操作部品として扱うが展開を実装していないため、これがないとWindowsのUI Automationから開けなくなる。
 
 ### 修正
 
