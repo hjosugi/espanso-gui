@@ -6,6 +6,14 @@ Espanso GUIの重要な変更を記録します。形式は[Keep a Changelog](ht
 
 ## [未リリース]
 
+### セキュリティ
+
+- RUSTSEC-2026-0414とRUSTSEC-2026-0433（wikilinkでeventが指数的に増える問題と解析が二乗時間になる問題）に対応するため`pulldown-cmark`を0.13.6へ、RUSTSEC-2026-0486（拡張属性の関数が未書き込みのbyteを初期化済みとして扱う問題）に対応するため`rustix`を1.1.6へ更新。Markdown previewはwikilinkを有効にしていないため、parserの問題の影響は受けていなかった。
+
+### 変更
+
+- yankされた`async-executor` 1.14.0と`clipboard-win` 5.4.1を1.14.1と5.4.3へ置き換え、`cargo-deny` dependency policyを復旧。
+
 ## [0.4.0] - 2026-09-25
 
 ### 追加
