@@ -15,6 +15,10 @@ All notable changes to Espanso GUI are documented here. The format follows [Keep
 - Replaced the unmaintained `chrono` (RUSTSEC-2026-0543) with `jiff` for backup timestamps. Backup folders keep the same UTC `YYYYMMDDTHHMMSS.mmmZ` names, so existing backup history still lists newest first.
 - Replaced the yanked `async-executor` 1.14.0 and `clipboard-win` 5.4.1 with 1.14.1 and 5.4.3, restoring the `cargo-deny` dependency policy.
 
+### Fixed
+
+- Fixed Cmd/Ctrl shortcuts (`1`–`5` to switch sections, `F`, `N`, `S`) being ignored when the whole keystroke arrived within a single slow frame. Each shortcut is now matched against the modifiers that its own key event carried, so a quick keystroke is no longer dropped.
+
 ## [0.4.0] - 2026-09-25
 
 ### Added

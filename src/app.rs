@@ -639,25 +639,29 @@ impl EspansoGuiApp {
         if self.has_open_modal() {
             return;
         }
-        let (save, new, search, destination) = ui.input(|input| {
-            let command = input.modifiers.command;
-            let destination = if command && input.key_pressed(Key::Num1) {
+        // Match each shortcut against the modifiers its own key event carries. The modifier state
+        // reported for a frame is the state at the end of it, so a stroke that has already
+        // finished by the time the frame runs (a slow frame, or a synthesized stroke) would
+        // otherwise be dropped.
+        let (save, new, search, destination) = ui.input_mut(|input| {
+            let mut command = |key| input.consume_key(egui::Modifiers::COMMAND, key);
+            let destination = if command(Key::Num1) {
                 Some(Section::Library)
-            } else if command && input.key_pressed(Key::Num2) {
+            } else if command(Key::Num2) {
                 Some(Section::Profiles)
-            } else if command && input.key_pressed(Key::Num3) {
+            } else if command(Key::Num3) {
                 Some(Section::Globals)
-            } else if command && input.key_pressed(Key::Num4) {
+            } else if command(Key::Num4) {
                 Some(Section::Diagnostics)
-            } else if command && input.key_pressed(Key::Num5) {
+            } else if command(Key::Num5) {
                 Some(Section::Settings)
             } else {
                 None
             };
             (
-                command && input.key_pressed(Key::S),
-                command && input.key_pressed(Key::N),
-                command && input.key_pressed(Key::F),
+                command(Key::S),
+                command(Key::N),
+                command(Key::F),
                 destination,
             )
         });
@@ -4147,6 +4151,68 @@ max_form_width: 640
                 "dialog {dialog_kind} allowed Cmd/Ctrl+5 to navigate behind it"
             );
         }
+    }
+
+    /// Runs one frame in which a whole Ctrl/Cmd+key stroke has already arrived and finished.
+    /// That is what a frame sees when it takes longer than the stroke: the key events carry the
+    /// modifier, but the modifier state at the end of the frame has been released again.
+    fn run_frame_with_finished_stroke(app: &mut EspansoGuiApp, key: Key) {
+        let command = egui::Modifiers::COMMAND;
+        let key_event = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: command,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1_440.0, 900.0),
+            )),
+            events: vec![
+                egui::Event::ModifiersChanged(command),
+                key_event(true),
+                key_event(false),
+                egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+            ],
+            ..Default::default()
+        };
+        let context = egui::Context::default();
+        let mut output = context.run_ui(input, |ui| app.render(ui));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn shortcuts_work_when_the_whole_stroke_arrives_in_one_frame() {
+        for (key, expected) in [
+            (Key::Num1, Section::Library),
+            (Key::Num2, Section::Profiles),
+            (Key::Num3, Section::Globals),
+            (Key::Num4, Section::Diagnostics),
+            (Key::Num5, Section::Settings),
+            (Key::F, Section::Library),
+        ] {
+            let mut app = accessibility_fixture(Language::English);
+            // Start somewhere the shortcut has to leave, so a missed stroke is visible.
+            app.section = if expected == Section::Settings {
+                Section::Diagnostics
+            } else {
+                Section::Settings
+            };
+            run_frame_with_finished_stroke(&mut app, key);
+            assert_eq!(app.section, expected, "Cmd/Ctrl+{key:?} was ignored");
+        }
+
+        let mut app = accessibility_fixture(Language::English);
+        app.section = Section::Library;
+        let original_snippet_count = app.files[0].document.matches.len();
+        run_frame_with_finished_stroke(&mut app, Key::N);
+        assert_eq!(
+            app.files[0].document.matches.len(),
+            original_snippet_count + 1,
+            "Cmd/Ctrl+N was ignored"
+        );
     }
 
     #[test]
