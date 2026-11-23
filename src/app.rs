@@ -4334,7 +4334,7 @@ max_form_width: 640
     fn dialogs_and_operation_messages_expose_accessible_semantics() {
         let context = egui::Context::default();
         context.enable_accesskit();
-        let mut output = context.run_ui(Default::default(), |ui| {
+        let render = |ui: &mut Ui| {
             let _ = snippet_card(
                 ui,
                 true,
@@ -4353,19 +4353,26 @@ max_form_width: 640
                     text: "Test error".into(),
                 },
             );
-        });
+        };
+        // A modal is sized in an invisible first pass, which is hidden from assistive technology.
+        let mut sizing = context.run_ui(Default::default(), render);
+        sizing.textures_delta.clear();
+        let mut output = context.run_ui(Default::default(), render);
         output.textures_delta.clear();
         let update = output
             .platform_output
             .accesskit_update
             .expect("accessibility should be enabled");
 
-        let dialog = update
+        let dialogs = update
             .nodes
             .iter()
             .map(|(_, node)| node)
-            .find(|node| node.role() == egui::accesskit::Role::Dialog)
-            .expect("dialog node");
+            .filter(|node| node.role() == egui::accesskit::Role::Dialog)
+            .collect::<Vec<_>>();
+        let [dialog] = dialogs.as_slice() else {
+            panic!("expected one dialog node, found {}", dialogs.len());
+        };
         assert_eq!(dialog.label(), Some("Test dialog"));
         assert!(dialog.is_modal());
 

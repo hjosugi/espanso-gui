@@ -322,7 +322,7 @@ fn override_checkbox(
     let accessible_label = format!("{field_label}: {visible_label}");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Checkbox,
+            egui::Role::CheckBox,
             ui.is_enabled(),
             *overridden,
             accessible_label.clone(),

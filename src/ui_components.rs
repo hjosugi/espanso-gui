@@ -74,7 +74,11 @@ pub(crate) fn show_modal(
     content: impl FnOnce(&mut Ui),
 ) -> bool {
     let modal_height = (ui.ctx().content_rect().height() - theme::MODAL_VIEWPORT_GUTTER).max(0.0);
-    let response = Modal::new(Id::new(id)).show(ui.ctx(), |ui| {
+    let modal_id = Id::unique(id);
+    // egui exposes a modal's area, backdrop included, as an unnamed dialog. The dialog that
+    // assistive technology should announce is the titled node below, so keep the area generic.
+    let area = Modal::default_area(modal_id).role(egui::accesskit::Role::GenericContainer);
+    let response = Modal::new(modal_id).area(area).show(ui.ctx(), |ui| {
         ui.push_id((id, "dialog"), |ui| {
             ui.set_max_height(modal_height);
             section_heading(ui, title);
@@ -252,7 +256,7 @@ fn label_button_with_context(
     let enabled = response.enabled();
     let accessible_label = format!("{visible_label}: {context}");
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible_label.clone())
+        egui::WidgetInfo::labeled(egui::Role::Button, enabled, accessible_label.clone())
     });
     response
 }
@@ -278,7 +282,7 @@ pub(crate) fn context_selectable_value<Value: PartialEq>(
     let accessible_label = format!("{visible_label}: {context}");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             enabled,
             selected,
             accessible_label.clone(),
@@ -304,9 +308,8 @@ pub(crate) fn unambiguous_selectable_value<Value: PartialEq>(
         *current_value = selected_value;
     }
     let enabled = response.enabled();
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
     response
 }
 
@@ -342,7 +345,7 @@ pub(crate) fn selection_list_row(
     let enabled = response.enabled();
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             enabled,
             selected,
             accessible_label.clone(),
@@ -506,7 +509,7 @@ pub(crate) fn snippet_card(
         .join(". ");
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             ui.is_enabled(),
             selected,
             accessible_label.clone(),
